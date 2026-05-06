@@ -12,6 +12,16 @@ const ratelimit = new Ratelimit({
   analytics: true
 })
 
+// Seeded Random function (Mulberry32)
+const mulberry32 = (a: number) => {
+  return function() {
+    let t = a += 0x6D2B79F5;
+    t = Math.imul(t ^ t >>> 15, t | 1);
+    t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  }
+}
+
 export async function GET(req: NextRequest) {
   // Rate limiting
   const ip = req.headers.get('x-forwarded-for') ?? '127.0.0.1'
@@ -23,34 +33,50 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const page = parseInt(searchParams.get('page') || '0', 10)
   const category = searchParams.get('category') || 'all'
+  const seedParam = searchParams.get('seed')
+  const seed = seedParam ? parseInt(seedParam, 10) : 42
 
-  const key = `feed:${page}:${category}`
+  const poolKey = `feed:pool:${category}`
   
   try {
-    const products = await withCache(key, 21600, async () => {
+    const productsPool = await withCache(poolKey, 3600, async () => {
+      // Fetch up to 1000 products for the pool to avoid exhausting DB queries while keeping variety
       if (category === 'all') {
         return sql`SELECT * FROM products 
                    WHERE is_active = true 
-                   ORDER BY updated_at DESC
-                   LIMIT 20 OFFSET ${page * 20}`
+                   ORDER BY random()
+                   LIMIT 500`
       } else {
         return sql`SELECT * FROM products 
                    WHERE is_active = true AND category = ${category}
-                   ORDER BY updated_at DESC
-                   LIMIT 20 OFFSET ${page * 20}`
+                   ORDER BY random()
+                   LIMIT 500`
       }
     })
 
-    // Check if database is empty to fallback gracefully
-    if (page === 0 && products.length === 0) {
+    // Fallback if empty database
+    if (page === 0 && productsPool.length === 0) {
        const countResult = await sql`SELECT COUNT(*) as exact_count FROM products`
        if (countResult[0]?.exact_count == 0) {
            return NextResponse.json({ products: [], empty: true })
        }
     }
 
+    // Shuffle pool with seed
+    const rng = mulberry32(seed)
+    const shuffledPool = [...productsPool]
+    for (let i = shuffledPool.length - 1; i > 0; i--) {
+       const j = Math.floor(rng() * (i + 1));
+       [shuffledPool[i], shuffledPool[j]] = [shuffledPool[j], shuffledPool[i]]
+    }
+
+    // Paginate the shuffled pool
+    const pageSize = 20
+    const offset = page * pageSize
+    const paginatedProducts = shuffledPool.slice(offset, offset + pageSize)
+
     // Convert keys from DB (snake_case) to Frontend model (camelCase)
-    const normalizedProducts = products.map(p => ({
+    const normalizedProducts = paginatedProducts.map(p => ({
        id: p.id,
        partnerId: p.partner_id,
        name: p.name,

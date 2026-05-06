@@ -13,11 +13,14 @@ export function FeedContainer() {
   const { isSearchMode, setIsSearchMode, activeCategory } = useFeedStore()
   const [currentIndex, setCurrentIndex] = useState(0)
   const containerRef = useRef<HTMLDivElement>(null)
+  
+  // Create a random seed that stays stable per session so pagination works across the same shuffled list
+  const [sessionSeed] = useState(() => Math.floor(Math.random() * 1000000))
 
   const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading } = useInfiniteQuery({
-    queryKey: ['feed', activeCategory],
+    queryKey: ['feed', activeCategory, sessionSeed],
     queryFn: async ({ pageParam = 0 }) => {
-      const res = await fetch(`/api/feed?page=${pageParam}&category=${activeCategory}`)
+      const res = await fetch(`/api/feed?page=${pageParam}&category=${activeCategory}&seed=${sessionSeed}`)
       return res.json()
     },
     initialPageParam: 0,
