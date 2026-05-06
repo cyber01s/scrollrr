@@ -54,7 +54,7 @@ export async function GET(req: NextRequest) {
           if (!items || items.length === 0) break
           
           for (const item of items) {
-             const product = normalizeProduct(item, campaignId)
+             const product = normalizeProduct(item, campaignId, trackingDomain)
              if (!product.id || !product.name) continue
              
              await sql`
@@ -73,6 +73,7 @@ export async function GET(req: NextRequest) {
                    price = EXCLUDED.price,
                    original_price = EXCLUDED.original_price,
                    image_url = EXCLUDED.image_url,
+                   affiliate_url = EXCLUDED.affiliate_url,
                    is_active = true,
                    updated_at = NOW()
              `

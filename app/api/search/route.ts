@@ -33,10 +33,15 @@ export async function GET(req: NextRequest) {
   
   try {
     const products = await withCache(key, 1800, async () => {
-       const searchQuery = `%${q}%`
-       return sql`SELECT *, ts_rank(search_vector, plainto_tsquery('english', ${q})) as rank
+       // Convert user query to prefix search: "electric bike" -> "electric:* & bike:*"
+       const terms = q.trim().replace(/[^a-zA-Z0-9\s]/g, '').split(/\s+/).filter(Boolean)
+       const tsQuery = terms.length > 0 ? terms.map(term => `${term}:*`).join(' & ') : ''
+       
+       if (!tsQuery) return []
+
+       return sql`SELECT *, ts_rank(search_vector, to_tsquery('english', ${tsQuery})) as rank
                   FROM products
-                  WHERE is_active = true AND search_vector @@ plainto_tsquery('english', ${q})
+                  WHERE is_active = true AND search_vector @@ to_tsquery('english', ${tsQuery})
                   ORDER BY rank DESC LIMIT 30`
     })
 

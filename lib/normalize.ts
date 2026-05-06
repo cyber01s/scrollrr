@@ -1,7 +1,14 @@
 import { Product } from '@/types/product'
 
-export function normalizeProduct(rawItem: any, partnerCampaignId: string): Product {
+export function normalizeProduct(rawItem: any, partnerCampaignId: string, trackingDomain?: string | null): Product {
   // impact.com Items schema handles map varying fields
+  
+  let finalAffiliateUrl = rawItem.TrackingUrl || rawItem.Url || '';
+  
+  if (rawItem.Url && !rawItem.TrackingUrl && trackingDomain) {
+      const sep = trackingDomain.includes('?') ? '&' : '?';
+      finalAffiliateUrl = `${trackingDomain}${sep}u=${encodeURIComponent(rawItem.Url)}`;
+  }
   
   return {
     id: rawItem.Id,
@@ -12,7 +19,7 @@ export function normalizeProduct(rawItem: any, partnerCampaignId: string): Produ
     price: parseFloat(rawItem.CurrentPrice) || parseFloat(rawItem.Price) || null,
     originalPrice: parseFloat(rawItem.OriginalPrice) || null,
     currency: rawItem.Currency || 'USD',
-    affiliateUrl: rawItem.Url || rawItem.TrackingUrl || '',
+    affiliateUrl: finalAffiliateUrl,
     description: rawItem.Description || null,
     brand: rawItem.Brand || null,
     rating: rawItem.Rating ? parseFloat(rawItem.Rating) : null,
