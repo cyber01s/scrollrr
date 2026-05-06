@@ -1,11 +1,9 @@
 {
-  "crons": [
+  "version": 2,
+  "rewrites": [
     {
-      "path": "/api/cron/sync-products",
-      "schedule": "0 3 * * *"
+      "source": "/((?!api/.*).*)",
+      "destination": "/index.html"
     }
-  ],
-  "functions": {
-    "app/api/cron/**": { "maxDuration": 60 }
-  }
+  ]
 }

@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">Scrollrr</string>
-    <string name="title_activity_main">Scrollrr</string>
-    <string name="package_name">com.scrollrr.app</string>
-    <string name="custom_url_scheme">com.scrollrr.app</string>
+    <string name="app_name">Scrollr</string>
+    <string name="title_activity_main">Scrollr</string>
+    <string name="package_name">com.cyberqrs.scrollr</string>
+    <string name="custom_url_scheme">com.cyberqrs.scrollr</string>
 </resources>
