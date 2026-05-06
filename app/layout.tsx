@@ -8,6 +8,7 @@ const inter = Inter({ subsets: ['latin'] })
 export const metadata: Metadata = {
   title: 'Scrollr',
   description: 'A fullscreen vertical scroll feed for affiliate products',
+  manifest: '/manifest.json',
 }
 
 export const viewport = {
