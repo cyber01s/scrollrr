@@ -31,12 +31,8 @@ export function FeedContainer() {
 
   const allProducts = data?.pages.flatMap((page: any) => page.products || []) || []
 
-  // Prefetch logic
-  useEffect(() => {
-    if (hasNextPage && currentIndex >= allProducts.length - 5 && !isFetchingNextPage) {
-      fetchNextPage()
-    }
-  }, [currentIndex, hasNextPage, isFetchingNextPage, allProducts.length, fetchNextPage])
+  // Prefetch logic removed to save API requests and DB quota
+  // Users must click "Load More" when they reach the end
 
   const handleScroll = useCallback(() => {
     if (!containerRef.current) return
@@ -48,6 +44,19 @@ export function FeedContainer() {
 
   const handleSearchToggle = () => {
     setIsSearchMode(!isSearchMode)
+  }
+
+  const handleLoadMore = async () => {
+    if (hasNextPage) {
+      await fetchNextPage()
+      // Optional: scroll to the newly loaded item
+    } else {
+      // Smart mechanism: if we run out, just reset to top to simulate infinite feed,
+      // or shuffle if we had a shuffle mechanism. For now, scroll to top.
+      if (containerRef.current) {
+        containerRef.current.scrollTo({ top: 0, behavior: 'smooth' })
+      }
+    }
   }
 
   if (isLoading) {
@@ -84,9 +93,14 @@ export function FeedContainer() {
          <h1 className="text-white/90 tracking-[0.4em] text-[14px] font-light uppercase">SCROLLR</h1>
          
          <div className="flex items-center gap-4">
-           <div className="hidden sm:block border-[1px] border-[var(--color-glass-border)] bg-[var(--color-glass)] rounded-full px-3.5 py-1.5 text-[11px] uppercase tracking-[0.1em] text-white/70">
-             14 ACTIVE PARTNERS
-           </div>
+           <a 
+             href="https://newfortech.com" 
+             target="_blank" 
+             rel="noopener noreferrer"
+             className="pointer-events-auto border-[1px] border-white/20 bg-white/10 hover:bg-white/20 transition-colors rounded-full px-3.5 py-1.5 text-[11px] uppercase tracking-[0.1em] text-white/90"
+           >
+             NewForTech
+           </a>
            <button 
              onClick={handleSearchToggle}
              className="w-10 h-10 flex items-center justify-end text-white pointer-events-auto"
@@ -115,11 +129,18 @@ export function FeedContainer() {
             </div>
           )
         })}
-        {isFetchingNextPage && (
-          <div className="w-full h-[100dvh] snap-start flex items-center justify-center bg-black">
-             <div className="w-6 h-6 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-          </div>
-        )}
+        <div className="w-full h-[100dvh] snap-start flex flex-col items-center justify-center bg-black gap-6">
+           <h2 className="text-white/80 font-[family-name:var(--font-serif)] text-2xl tracking-wide">
+             {hasNextPage ? "End of current feed" : "You've seen everything!"}
+           </h2>
+           <button 
+             onClick={handleLoadMore}
+             disabled={isFetchingNextPage}
+             className="px-8 py-3 rounded-full bg-[var(--color-accent)] text-white font-bold uppercase tracking-widest text-sm shadow-[0_0_20px_rgba(255,99,33,0.3)] hover:scale-105 transition-transform disabled:opacity-50"
+           >
+             {isFetchingNextPage ? 'Loading...' : (hasNextPage ? 'Load More' : 'Back to Top')}
+           </button>
+        </div>
       </div>
 
       <SearchOverlay isVisible={isSearchMode} onClose={() => setIsSearchMode(false)} />

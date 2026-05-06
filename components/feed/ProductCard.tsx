@@ -44,7 +44,7 @@ export function ProductCard({ product, isVisible }: ProductCardProps) {
     >
       <CardBackground imageUrl={product.imageUrl} isVisible={isVisible} />
       <CardPanel product={product} isVisible={isVisible} />
-      <CardActions productId={product.id} isVisible={isVisible} />
+      <CardActions product={product} isVisible={isVisible} />
     </motion.div>
   )
 }
