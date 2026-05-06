@@ -8,6 +8,8 @@ import { normalizeProduct } from '@/lib/normalize'
 // Edge runtime limits or require Node APIs if impact SDK was used.
 // We'll configure maxDuration to 60s in vercel.json for this function.
 
+export const maxDuration = 60; // Allow enough time for syncing
+
 export async function GET(req: NextRequest) {
   if (req.headers.get('Authorization') !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })

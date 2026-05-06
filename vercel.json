@@ -6,9 +6,6 @@
     }
   ],
   "functions": {
-    "app/api/cron/**": { "maxDuration": 60 },
-    "app/api/feed/route.ts": { "runtime": "edge" },
-    "app/api/search/route.ts": { "runtime": "edge" },
-    "app/api/track/route.ts": { "runtime": "edge" }
+    "app/api/cron/**": { "maxDuration": 60 }
   }
 }
