@@ -1,14 +1,14 @@
 {
   "name": "Scrollr",
   "short_name": "Scrollr",
-  "display": "standalone",
-  "background_color": "#0A0A0A",
-  "theme_color": "#0A0A0A",
-  "orientation": "portrait",
+  "description": "A fullscreen vertical scroll feed for affiliate products",
   "start_url": "/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#000000",
   "icons": [
     {
-      "src": "https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=512&h=512&fit=crop",
+      "src": "/icon-512.png",
       "sizes": "512x512",
       "type": "image/png"
     }

@@ -13,9 +13,6 @@ export function CardBackground({ imageUrl, isVisible }: CardBackgroundProps) {
     return <div className="absolute inset-0 bg-neutral-900" />
   }
 
-  // Upgrade insecure http:// URLs to https:// to prevent mixed content errors
-  const secureImageUrl = imageUrl.replace(/^http:\/\//i, 'https://')
-
   return (
     <motion.div
       initial={{ scale: 1.04 }}
@@ -32,12 +29,12 @@ export function CardBackground({ imageUrl, isVisible }: CardBackgroundProps) {
       
       {/* Product Image */}
       <img 
-        src={secureImageUrl} 
+        src={imageUrl} 
         alt="" 
         className="absolute inset-0 w-full h-full object-cover object-center opacity-90 z-0 mix-blend-overlay"
       />
       <img 
-        src={secureImageUrl} 
+        src={imageUrl} 
         alt="" 
         className="absolute inset-0 w-full h-full object-cover object-center opacity-[0.85] z-0"
       />

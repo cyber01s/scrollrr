@@ -8,7 +8,6 @@ const inter = Inter({ subsets: ['latin'] })
 export const metadata: Metadata = {
   title: 'Scrollr',
   description: 'A fullscreen vertical scroll feed for affiliate products',
-  manifest: '/manifest.json',
 }
 
 export const viewport = {
@@ -29,24 +28,6 @@ export default function RootLayout({
     <html lang="en">
       <body className={`${inter.className} bg-black text-white overflow-hidden`}>
         <Providers>{children}</Providers>
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
-              if ('serviceWorker' in navigator) {
-                window.addEventListener('load', function() {
-                  navigator.serviceWorker.register('/sw.js').then(
-                    function(registration) {
-                      console.log('ServiceWorker registration successful');
-                    },
-                    function(err) {
-                      console.log('ServiceWorker registration failed: ', err);
-                    }
-                  );
-                });
-              }
-            `,
-          }}
-        />
       </body>
     </html>
   )
