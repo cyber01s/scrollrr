@@ -34,9 +34,9 @@ export async function GET(req: NextRequest) {
   try {
     const products = await withCache(key, 1800, async () => {
        const searchQuery = `%${q}%`
-       return sql`SELECT *, ts_rank(search_vector, to_tsquery('english', ${q})) as rank
+       return sql`SELECT *, ts_rank(search_vector, plainto_tsquery('english', ${q})) as rank
                   FROM products
-                  WHERE is_active = true AND search_vector @@ to_tsquery('english', ${q})
+                  WHERE is_active = true AND search_vector @@ plainto_tsquery('english', ${q})
                   ORDER BY rank DESC LIMIT 30`
     })
 
