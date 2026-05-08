@@ -11,8 +11,11 @@ export default function Feed() {
 
   const fetchFeed = async ({ pageParam = 0 }) => {
     try {
-      const API_BASE = import.meta.env.VITE_API_URL || '';
-      const res = await fetch(`${API_BASE}/api/feed?page=${pageParam}`);
+      const API_BASE = '';
+      const url = `/feed?page=${pageParam}`;
+      console.log("Fetching feed from:", url);
+      
+      const res = await fetch(url);
       if (!res.ok) {
         throw new Error(`HTTP error! status: ${res.status}`);
       }
@@ -38,18 +41,6 @@ export default function Feed() {
     getNextPageParam: (lastPage, allPages) => 
       (lastPage && Array.isArray(lastPage) && lastPage.length > 0) ? allPages.length : undefined,
   });
-
-  // ... skip down to return ...
-
-  if (isError) {
-    return (
-      <div className="flex flex-col items-center justify-center h-[100dvh] w-full bg-black text-center p-8 gap-4">
-        <div className="text-white text-xl">Error loading feed</div>
-        <div className="text-red-400 text-sm">{error instanceof Error ? error.message : "Unknown error"}</div>
-        <button onClick={() => window.location.reload()} className="px-4 py-2 mt-4 bg-white/10 rounded-full text-white">Retry</button>
-      </div>
-    );
-  }
 
   useEffect(() => {
     if (data) {
@@ -81,6 +72,16 @@ export default function Feed() {
   }, [handleScroll]);
 
   const displayCards = isSearchMode && searchResults.length > 0 ? searchResults : cards;
+
+  if (isError) {
+    return (
+      <div className="flex flex-col items-center justify-center h-[100dvh] w-full bg-black text-center p-8 gap-4">
+        <div className="text-white text-xl">Error loading feed</div>
+        <div className="text-red-400 text-sm">{error instanceof Error ? error.message : "Unknown error"}</div>
+        <button onClick={() => window.location.reload()} className="px-4 py-2 mt-4 bg-white/10 rounded-full text-white">Retry</button>
+      </div>
+    );
+  }
 
   if (isLoading && displayCards.length === 0) {
     return (

@@ -66,6 +66,11 @@ try {
 const app = express();
 const PORT = 3000;
 
+app.use((req, res, next) => {
+  console.log(`[REQ] ${req.method} ${req.url} -> ${req.path}`);
+  next();
+});
+
 app.use(express.json());
 
 // Expose app for Vercel
@@ -378,6 +383,7 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
     const mock = generateMockProducts(10, parseInt(req.query.page as string) || 0);
     return res.json(mock);
   } catch (error: any) {
+    console.error("Feed API Error:", error);
     console.log("Returning Mock Data on Feed API Error:", error.message);
     return res.json(generateMockProducts(10, parseInt(req.query.page as string) || 0));
   }

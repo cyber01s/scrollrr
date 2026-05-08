@@ -25,8 +25,10 @@ export default function SearchOverlay() {
       if (query) {
         setIsSearching(true);
         try {
-          const API_BASE = import.meta.env.VITE_API_URL || '';
-          const res = await fetch(`${API_BASE}/api/search?q=${encodeURIComponent(query)}`);
+          const API_BASE = '';
+          const url = `/search?q=${encodeURIComponent(query)}`;
+          
+          const res = await fetch(url);
           const data = await res.json();
           setLocalResults(data);
         } catch (e) {

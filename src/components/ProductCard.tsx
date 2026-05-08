@@ -34,8 +34,9 @@ export default function ProductCard({ product, index }: ProductCardProps) {
   } | null>(null);
 
   useEffect(() => {
-    const API_BASE = import.meta.env.VITE_API_URL || '';
-    fetch(`${API_BASE}/api/image?url=${encodeURIComponent(product.imageUrl)}`)
+    const API_BASE = '';
+    const url = `/image?url=${encodeURIComponent(product.imageUrl)}`;
+    fetch(url)
       .then((res) => (res.ok ? res.json() : Promise.reject("Not ok")))
       .then((data) => {
         if (data && data.dominantColor) setImgMeta(data);
@@ -51,8 +52,9 @@ export default function ProductCard({ product, index }: ProductCardProps) {
   }, [product.imageUrl]);
 
   const handleShopNow = async () => {
-    const API_BASE = import.meta.env.VITE_API_URL || '';
-    fetch(`${API_BASE}/api/track`, {
+    const API_BASE = '';
+    const url = `/track`;
+    fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -82,8 +84,9 @@ export default function ProductCard({ product, index }: ProductCardProps) {
     setSpecsLoading(true);
     setSpecsError(false);
     try {
-      const API_BASE = import.meta.env.VITE_API_URL || '';
-      const res = await fetch(`${API_BASE}/api/analyze?url=${encodeURIComponent(product.imageUrl)}&name=${encodeURIComponent(product.name)}&category=${encodeURIComponent(product.category)}`);
+      const API_BASE = '';
+      const url = `/analyze?url=${encodeURIComponent(product.imageUrl)}&name=${encodeURIComponent(product.name)}&category=${encodeURIComponent(product.category)}`;
+      const res = await fetch(url);
       if (!res.ok) throw new Error("Failed");
       const data = await res.json();
       setSmartSpecs(data);
