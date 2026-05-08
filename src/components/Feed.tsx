@@ -5,14 +5,22 @@ import { useFeedStore } from '../store/feed';
 import { Product } from '../types/product';
 
 export default function Feed() {
-  const { cards, appendCards, setCurrentIndex, isSearchMode, searchResults } = useFeedStore();
+  const { cards, appendCards, currentIndex, setCurrentIndex, isSearchMode, searchResults } = useFeedStore();
   const observerTarget = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const fetchFeed = async ({ pageParam = 0 }) => {
-    const API_BASE = import.meta.env.VITE_API_URL || '';
-    const res = await fetch(`${API_BASE}/api/feed?page=${pageParam}`);
-    return res.json();
+    try {
+      const API_BASE = import.meta.env.VITE_API_URL || '';
+      const res = await fetch(`${API_BASE}/api/feed?page=${pageParam}`);
+      if (!res.ok) {
+        throw new Error(`HTTP error! status: ${res.status}`);
+      }
+      return await res.json();
+    } catch (e) {
+      console.error("Feed fetch failed:", e);
+      throw e;
+    }
   };
 
   const {
@@ -21,6 +29,7 @@ export default function Feed() {
     hasNextPage,
     isFetchingNextPage,
     isError,
+    error,
     isLoading
   } = useInfiniteQuery({
     queryKey: ['feed'],
@@ -29,6 +38,18 @@ export default function Feed() {
     getNextPageParam: (lastPage, allPages) => 
       (lastPage && Array.isArray(lastPage) && lastPage.length > 0) ? allPages.length : undefined,
   });
+
+  // ... skip down to return ...
+
+  if (isError) {
+    return (
+      <div className="flex flex-col items-center justify-center h-[100dvh] w-full bg-black text-center p-8 gap-4">
+        <div className="text-white text-xl">Error loading feed</div>
+        <div className="text-red-400 text-sm">{error instanceof Error ? error.message : "Unknown error"}</div>
+        <button onClick={() => window.location.reload()} className="px-4 py-2 mt-4 bg-white/10 rounded-full text-white">Retry</button>
+      </div>
+    );
+  }
 
   useEffect(() => {
     if (data) {

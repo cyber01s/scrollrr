@@ -248,7 +248,7 @@ async function syncImpactProducts() {
 }
 
 // API Routes
-app.get("/api/feed", async (req, res) => {
+const feedHandler = async (req: express.Request, res: express.Response) => {
   try {
     if (db) {
       let count = 0;
@@ -379,11 +379,13 @@ app.get("/api/feed", async (req, res) => {
     return res.json(mock);
   } catch (error: any) {
     console.log("Returning Mock Data on Feed API Error:", error.message);
-    res.json(generateMockProducts(10, parseInt(req.query.page as string) || 0));
+    return res.json(generateMockProducts(10, parseInt(req.query.page as string) || 0));
   }
-});
+};
 
-app.get("/api/search", async (req, res) => {
+app.get(["/api/feed", "/feed"], feedHandler);
+
+const searchHandler = async (req: express.Request, res: express.Response) => {
   try {
     const searchQuery = req.query.q as string;
     if (!searchQuery) return res.json([]);
@@ -476,9 +478,11 @@ app.get("/api/search", async (req, res) => {
   } catch (error) {
     res.json([]);
   }
-});
+};
 
-app.get("/api/image", async (req, res) => {
+app.get(["/api/search", "/search"], searchHandler);
+
+const imageHandler = async (req: express.Request, res: express.Response) => {
   try {
     const imageUrl = req.query.url as string;
     if (!imageUrl) return res.status(400).send("URL required");
@@ -515,9 +519,11 @@ app.get("/api/image", async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: "Image processing failed" });
   }
-});
+};
 
-app.get("/api/analyze", async (req, res) => {
+app.get(["/api/image", "/image"], imageHandler);
+
+const analyzeHandler = async (req: express.Request, res: express.Response) => {
   try {
     const { url, name, category } = req.query;
     if (!url) return res.status(400).json({ error: "URL required" });
@@ -566,9 +572,11 @@ app.get("/api/analyze", async (req, res) => {
     console.error("AI Analysis error:", error.message);
     res.status(500).json({ error: "Could not generate specs" });
   }
-});
+};
 
-app.post("/api/track", async (req, res) => {
+app.get(["/api/analyze", "/analyze"], analyzeHandler);
+
+const trackHandler = async (req: express.Request, res: express.Response) => {
   const { productId, source, sessionId } = req.body;
   console.log("Tracking click:", req.body);
 
@@ -586,7 +594,9 @@ app.post("/api/track", async (req, res) => {
   }
 
   res.status(202).send();
-});
+};
+
+app.post(["/api/track", "/track"], trackHandler);
 
 // Vite middleware for development
 async function startServer() {
