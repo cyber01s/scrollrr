@@ -5,7 +5,7 @@ import {
   useTransform,
   AnimatePresence,
 } from "framer-motion";
-import { Heart, Share2, Info, Star, ArrowRight } from "lucide-react";
+import { Heart, Share2, Info, Star, ArrowRight, Sparkles, AlertCircle, Loader2 } from "lucide-react";
 import { Product } from "../types/product";
 import { useFeedStore } from "../store/feed";
 import { MOTION } from "../lib/motion";
@@ -74,6 +74,32 @@ export default function ProductCard({ product, index }: ProductCardProps) {
 
   const [lastTap, setLastTap] = useState(0);
   const [showSheet, setShowSheet] = useState(false);
+  const [smartSpecs, setSmartSpecs] = useState<string[] | null>(null);
+  const [specsLoading, setSpecsLoading] = useState(false);
+  const [specsError, setSpecsError] = useState(false);
+
+  const fetchSmartSpecs = async () => {
+    setSpecsLoading(true);
+    setSpecsError(false);
+    try {
+      const API_BASE = import.meta.env.VITE_API_URL || '';
+      const res = await fetch(`${API_BASE}/api/analyze?url=${encodeURIComponent(product.imageUrl)}&name=${encodeURIComponent(product.name)}&category=${encodeURIComponent(product.category)}`);
+      if (!res.ok) throw new Error("Failed");
+      const data = await res.json();
+      setSmartSpecs(data);
+    } catch {
+      setSpecsError(true);
+    } finally {
+      setSpecsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (showSheet && !smartSpecs && !specsError) {
+      fetchSmartSpecs();
+    }
+  }, [showSheet]);
+
   const [longPressTimer, setLongPressTimer] = useState<NodeJS.Timeout | null>(
     null,
   );
@@ -171,52 +197,40 @@ export default function ProductCard({ product, index }: ProductCardProps) {
           {product.category}
         </motion.div>
 
-        <h1 className="text-[22px] font-light leading-[1.2] text-white max-w-[80%] mb-4 line-clamp-2">
+        <h1 
+          className="text-[20px] sm:text-[22px] font-medium leading-[1.2] text-white max-w-[75%] mb-3"
+          style={{ display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}
+        >
           {product.name}
         </h1>
 
-        <div className="flex items-center gap-3 mb-4">
-          <span className="text-[16px] font-normal">${product.price}</span>
+        <div className="flex items-center gap-4 mb-2">
+          <div className="flex items-center gap-2 text-[13px] text-white/70 font-medium tracking-wide">
+            <span>★ {product.rating}</span>
+            <div className="w-[1px] h-3 bg-white/30" />
+            <span>{product.reviewCount > 999
+                ? `${(product.reviewCount / 1000).toFixed(1)}k`
+                : product.reviewCount}{" "} reviews</span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 mb-6">
+          <span className="text-[24px] font-bold tracking-tight">${product.price}</span>
           {product.originalPrice && (
             <>
-              <span className="text-[13px] font-normal text-white/45 line-through">
+              <span className="text-[14px] font-normal text-white/45 line-through">
                 ${product.originalPrice}
               </span>
-              <span className="text-[10px] font-normal px-[7px] py-[2px] bg-white/15 rounded-[100px] text-white">
-                -
-                {Math.round(
-                  ((product.originalPrice - product.price) /
-                    product.originalPrice) *
-                    100,
-                )}
-                %
+              <span className="text-[11px] font-bold px-2 py-[2px] bg-[#FF5A25] rounded-[100px] text-white">
+                -{Math.round(((product.originalPrice - product.price) / product.originalPrice) * 100)}%
               </span>
             </>
           )}
         </div>
 
-        <div className="flex items-center gap-4 mb-6">
-          <div className="flex items-center gap-3">
-            <span className="text-[12px] text-white/70">
-              {product.rating} ★
-            </span>
-            <div className="w-[1px] h-3 bg-white/20" />
-            <span className="text-[12px] text-white/70">
-              {product.reviewCount > 999
-                ? `${(product.reviewCount / 1000).toFixed(1)}k`
-                : product.reviewCount}{" "}
-              reviews
-            </span>
-            <div className="w-[1px] h-3 bg-white/20" />
-            <span className="text-[12px] text-white/70 truncate max-w-[100px]">
-              {product.specs[0] || "Premium Gear"}
-            </span>
-          </div>
-        </div>
-
         <motion.button
           onClick={handleShopNow}
-          className="w-full h-[48px] rounded-[100px] bg-white/15 backdrop-blur-xl border-[0.5px] border-white/30 text-[14px] font-normal text-white flex items-center justify-center gap-2"
+          className="w-full h-[52px] rounded-[100px] bg-white text-black text-[14px] font-bold tracking-wide flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(255,255,255,0.2)]"
           whileHover={{ backgroundColor: "rgba(255,255,255,0.22)" }}
           whileTap={{ scale: 0.97 }}
           transition={MOTION.springFast}
@@ -302,21 +316,64 @@ export default function ProductCard({ product, index }: ProductCardProps) {
               <h3 className="text-xl font-light mb-6 pr-8">{product.name}</h3>
 
               <div className="space-y-6">
-                <div>
-                  <div className="text-[11px] text-white/40 uppercase mb-3">
-                    Specifications
+                <div className="min-h-[140px] flex flex-col">
+                  {/* Smart Specs Header */}
+                  <div className="flex items-center gap-2 mb-4">
+                    <Sparkles className="w-4 h-4 text-[#FF5A25]" />
+                    <span className="font-semibold text-[15px] text-white">Smart Specs</span>
                   </div>
-                  <ul className="space-y-2">
-                    {product.specs.map((spec, i) => (
-                      <li
-                        key={i}
-                        className="text-[13px] font-light text-white/80 flex items-center gap-2"
+
+                  {/* Loading State */}
+                  {specsLoading && (
+                    <div className="flex-1 flex flex-col items-center justify-center py-6 gap-3">
+                      <Loader2 className="w-5 h-5 text-white/50 animate-spin" />
+                      <span className="text-[13px] text-white/50 font-light">Analyzing product...</span>
+                    </div>
+                  )}
+
+                  {/* Error State */}
+                  {specsError && !specsLoading && (
+                    <div className="flex-1 flex flex-col items-center justify-center py-6 gap-3">
+                      <AlertCircle className="w-6 h-6 text-[#FF5A25]" />
+                      <span className="text-[14px] text-[#FF5A25] font-light">Could not generate specs.</span>
+                      <button 
+                        onClick={fetchSmartSpecs}
+                        className="text-[11px] uppercase tracking-widest text-[#FF5A25] mt-2 underline underline-offset-4"
                       >
-                        <div className="w-1 h-1 bg-white/30 rounded-full" />
-                        {spec}
-                      </li>
-                    ))}
-                  </ul>
+                        RETRY
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Success State */}
+                  {smartSpecs && !specsLoading && !specsError && (
+                    <ul className="space-y-3 mt-2">
+                      {smartSpecs.map((spec, i) => (
+                        <li
+                          key={i}
+                          className="text-[14px] font-light text-white/90 flex items-start gap-3"
+                        >
+                          <div className="w-1 h-1 bg-[#FF5A25] rounded-full mt-[8px] shrink-0" />
+                          <span className="leading-relaxed">{spec}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+
+                  {/* Fallback to static if AI didn't run at all but not loading (shouldn't happen but just in case) */}
+                  {!specsLoading && !specsError && !smartSpecs && (
+                    <ul className="space-y-3 mt-2">
+                      {product.specs.map((spec, i) => (
+                        <li
+                          key={i}
+                          className="text-[14px] font-light text-white/90 flex items-start gap-3"
+                        >
+                          <div className="w-1 h-1 bg-white/30 rounded-full mt-[8px]" />
+                          <span>{spec}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
 
                 <div className="flex gap-4">

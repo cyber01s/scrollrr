@@ -262,17 +262,28 @@ app.get("/api/feed", async (req, res) => {
       }
 
       if (count > 0) {
-        const q = query(collection(db, "products"), fsLimit(50));
+        const page = parseInt(req.query.page as string) || 0;
+        const pageSize = 10;
+        
+        // In a real app we'd use startAfter, but here we'll just query more and slice
+        // to keep it simple since we're just reading a dump of products
+        const q = query(collection(db, "products"), orderBy("id"));
         const snapshot = await getDocs(q);
         let products = snapshot.docs.map(doc => doc.data());
-        products = products.sort(() => Math.random() - 0.5).slice(0, 20);
-        return res.json(products);
+        
+        // Implement simple pagination
+        const start = page * pageSize;
+        const pagedProducts = products.slice(start, start + pageSize);
+        
+        return res.json(pagedProducts);
       }
     }
 
     // If no DB or DB is empty, fetch live from all partners
     if (hasImpactCreds) {
-      const page = parseInt(req.query.page as string) || 1;
+      let page = parseInt(req.query.page as string);
+      if (isNaN(page)) page = 0;
+      const impactPage = page + 1;
 
       const partnerRequests = SIDs.map(async (rawSid, i) => {
         const { sid, header } = getAuth(i);
@@ -304,7 +315,7 @@ app.get("/api/feed", async (req, res) => {
                   Accept: "application/json",
                   Authorization: header,
                 },
-                params: { PageSize: 10, Page: page },
+                params: { PageSize: 10, Page: impactPage },
               },
             )
             .catch((e) => {
@@ -320,7 +331,7 @@ app.get("/api/feed", async (req, res) => {
                     params: {
                       CatalogId: cid,
                       PageSize: 10,
-                      Page: page,
+                      Page: impactPage,
                       QueryString: "*",
                     },
                   },
@@ -498,6 +509,57 @@ app.get("/api/image", async (req, res) => {
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: "Image processing failed" });
+  }
+});
+
+app.get("/api/analyze", async (req, res) => {
+  try {
+    const { url, name, category } = req.query;
+    if (!url) return res.status(400).json({ error: "URL required" });
+
+    // Use Redis for caching AI specs
+    const cacheKey = `ai:specs:${Buffer.from(url as string).toString("base64").substring(0, 100)}`;
+    if (redis) {
+      const cached = await redis.get(cacheKey);
+      if (cached) return res.json(JSON.parse(cached));
+    }
+
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(500).json({ error: "No AI key configured" });
+    }
+
+    const { GoogleGenAI } = await import("@google/genai");
+    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+    // We can fetch the image and pass as base64 or just pass the parameters
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [
+        `You are a gear expert. Summarize the key specifications, materials, or features of this product in exactly 3 short bullet points (max 5 words each). Product Name: ${name}. Category: ${category}. Return ONLY a JSON array of 3 strings. Example: ["Carbon steel", "Waterproof", "Lightweight"]`
+      ]
+    });
+
+    const text = response.text || "";
+    let specs = ["Premium Quality", "Durable Build", "High Performance"];
+    try {
+      const match = text.match(/\[.*\]/s);
+      if (match) {
+        specs = JSON.parse(match[0]);
+      } else {
+        specs = JSON.parse(text);
+      }
+    } catch (e) {
+      console.log("Failed to parse Gemini response", text);
+    }
+
+    if (redis) {
+      await redis.set(cacheKey, JSON.stringify(specs), "EX", 86400 * 7); // 7 days cache
+    }
+
+    res.json(specs);
+  } catch (error: any) {
+    console.error("AI Analysis error:", error.message);
+    res.status(500).json({ error: "Could not generate specs" });
   }
 });
 

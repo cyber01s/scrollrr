@@ -72,7 +72,7 @@ export default function Feed() {
   return (
     <div 
       ref={containerRef}
-      className="snap-container scrollbar-hide no-scrollbar"
+      className="snap-container scrollbar-hide no-scrollbar relative w-full h-full"
     >
       {displayCards.map((product, index) => (
         <ProductCard 
@@ -82,8 +82,33 @@ export default function Feed() {
         />
       ))}
       
-      {/* Loading state indicator for infinite scroll (optional, user asked for seamless) */}
-      <div ref={observerTarget} className="h-10 w-full" />
+      {/* Scroll Indicator on first slide */}
+      {displayCards.length > 0 && currentIndex === 0 && (
+        <div className="fixed bottom-12 left-1/2 -translate-x-1/2 flex flex-col items-center justify-center pointer-events-none opacity-60 animate-bounce z-50">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.5))' }}>
+             <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </div>
+      )}
+
+      {/* Manual Load More / End of Feed */}
+      {!isSearchMode && (
+        <div className="snap-center h-screen w-full flex flex-col items-center justify-center bg-black text-white p-6">
+          {hasNextPage ? (
+            <div className="flex flex-col items-center gap-6">
+              <button 
+                onClick={() => fetchNextPage()}
+                disabled={isFetchingNextPage}
+                className="px-8 py-4 bg-[#FF5A25] rounded-full text-sm font-bold tracking-widest uppercase transition-transform hover:scale-105 active:scale-95 disabled:opacity-50"
+              >
+                {isFetchingNextPage ? 'Loading...' : 'Load More'}
+              </button>
+            </div>
+          ) : (
+            <div className="font-serif text-2xl text-white/80">End of current feed</div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
