@@ -63,7 +63,7 @@ export default function Feed() {
 
   if (isLoading && displayCards.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-screen w-full bg-black text-center p-8">
+      <div className="flex flex-col items-center justify-center h-[100dvh] w-full bg-black text-center p-8">
         <div className="text-[14px] opacity-40 animate-pulse">Initializing Scrollr...</div>
       </div>
     );
@@ -93,7 +93,7 @@ export default function Feed() {
 
       {/* Manual Load More / End of Feed */}
       {!isSearchMode && (
-        <div className="snap-center h-screen w-full flex flex-col items-center justify-center bg-black text-white p-6">
+        <div className="snap-center h-[100dvh] w-full flex flex-col items-center justify-center bg-black text-white p-6">
           {hasNextPage ? (
             <div className="flex flex-col items-center gap-6">
               <button 

@@ -275,7 +275,12 @@ app.get("/api/feed", async (req, res) => {
         const start = page * pageSize;
         const pagedProducts = products.slice(start, start + pageSize);
         
-        return res.json(pagedProducts);
+        if (pagedProducts.length > 0) {
+          return res.json(pagedProducts);
+        }
+        // If we ran out of DB products, generate mock products to keep feed infinite
+        console.log("Ran out of DB products, generating mock feed for page", page);
+        return res.json(generateMockProducts(10, page));
       }
     }
 
@@ -370,11 +375,11 @@ app.get("/api/feed", async (req, res) => {
     }
 
     console.log("Returning Mock Data...");
-    const mock = generateMockProducts(20, Math.floor(Math.random() * 100));
+    const mock = generateMockProducts(10, parseInt(req.query.page as string) || 0);
     return res.json(mock);
   } catch (error: any) {
     console.log("Returning Mock Data on Feed API Error:", error.message);
-    res.json(generateMockProducts(20, Math.floor(Math.random() * 100)));
+    res.json(generateMockProducts(10, parseInt(req.query.page as string) || 0));
   }
 });
 

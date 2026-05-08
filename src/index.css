@@ -53,13 +53,13 @@
 .snap-container {
   overflow-y: scroll;
   scroll-snap-type: y mandatory;
-  height: 100vh;
+  height: 100dvh;
   width: 100vw;
 }
 
 .snap-section {
   scroll-snap-align: start;
-  height: 100vh;
+  height: 100dvh;
   width: 100vw;
   position: relative;
 }
