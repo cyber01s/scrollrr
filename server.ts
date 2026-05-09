@@ -266,150 +266,97 @@ async function syncImpactProducts() {
 // API Routes
 const feedHandler = async (req: express.Request, res: express.Response) => {
   const page = parseInt(req.query.page as string) || 0;
-  console.log(`[FeedHandler] Request for page ${page}`);
+  console.log(`[FeedHandler] Request start: page=${page}`);
 
   try {
-    // Ensure infra check is at least attempted before first request
-    await Promise.race([infraReady, new Promise(r => setTimeout(r, 2000))]);
+    // 1. Give infrastructure a moment to initialize on first request
+    // We don't await indefinitely to avoid timeouts
+    if (page === 0) {
+      await Promise.race([infraReady, new Promise(r => setTimeout(r, 1000))]).catch(() => {});
+    }
 
+    // 2. Try Firestore
     if (db) {
-      let count = 0;
       try {
-        const snapshot = await getCountFromServer(collection(db, "products"));
-        count = snapshot.data().count;
-        console.log(`[FeedHandler] Firestore count: ${count}`);
-      } catch (e) {
-        console.warn("[FeedHandler] Firestore count failed, likely permissions or config.");
-      }
-
-      if (count < 100 || Math.random() < 0.2) {
-        syncImpactProducts().catch(e => console.error("Async sync background fail:", e)); 
-      }
-
-      if (count > 0) {
-        const pageSize = 10;
-        const q = query(collection(db, "products"), orderBy("id"), fsLimit(pageSize * (page + 1)));
-        const snapshot = await getDocs(q);
-        const products = snapshot.docs.map(doc => doc.data());
+        const statsDoc = await getCountFromServer(collection(db, "products")).catch(() => null);
+        const count = statsDoc?.data().count || 0;
         
-        const start = page * pageSize;
-        const pagedProducts = products.slice(start, start + pageSize);
-        
-        if (pagedProducts.length > 0) {
-          console.log(`[FeedHandler] Returning ${pagedProducts.length} items from Firestore`);
-          return res.json(pagedProducts);
+        if (count < 50) {
+          syncImpactProducts().catch(e => console.error("Background sync fail:", e));
         }
-        console.log(`[FeedHandler] No more Firestore items for page ${page}, falling through.`);
+
+        if (count > 0) {
+          const pageSize = 10;
+          const q = query(collection(db, "products"), orderBy("id"), fsLimit(pageSize * (page + 1)));
+          const snapshot = await getDocs(q);
+          const products = snapshot.docs.map(doc => doc.data());
+          
+          const start = page * pageSize;
+          const pagedProducts = products.slice(start, start + pageSize);
+          
+          if (pagedProducts && pagedProducts.length > 0) {
+            console.log(`[FeedHandler] Returning ${pagedProducts.length} from DB`);
+            return res.json(pagedProducts);
+          }
+        }
+      } catch (dbError: any) {
+        console.error("[FeedHandler] Firestore error (falling back):", dbError.message);
       }
     }
 
+    // 3. Try Impact API
     if (hasImpactCreds) {
-      console.log(`[FeedHandler] Fetching live Impact data for page ${page}`);
-      const impactPage = page + 1;
-
-      const partnerRequests = SIDs.map(async (rawSid, i) => {
-        const { sid, header } = getAuth(i);
-        try {
-          // 1. Get Top Catalog
-          const catRes = await axios
-            .get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/`, {
+      try {
+        const impactPage = page + 1;
+        const partnerRequests = SIDs.map(async (sid, i) => {
+          const { header } = getAuth(i);
+          try {
+            const catRes = await axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/`, {
               headers: { Accept: "application/json", Authorization: header },
+              timeout: 3000,
+            }).catch(() => null);
+
+            const cid = catRes?.data?.Catalogs?.[0]?.Id || catRes?.data?.Catalogs?.[0]?.CatalogId;
+            if (!cid) return [];
+
+            const itemsRes = await axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/${cid}/Items`, {
+              headers: { Accept: "application/json", Authorization: header },
+              params: { PageSize: 10, Page: impactPage },
               timeout: 4000,
-            })
-            .catch((e) => {
-              console.error(
-                "Impact Cats API Error:",
-                e.response?.data || e.message,
-              );
-              return null;
+            }).catch(async () => {
+               return axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/ItemSearch`, {
+                headers: { Accept: "application/json", Authorization: header },
+                params: { CatalogId: cid, PageSize: 10, Page: impactPage, QueryString: "*" },
+                timeout: 4000,
+              }).catch(() => null);
             });
 
-          if (!catRes || !catRes.data || !catRes.data.Catalogs) return [];
-          const cid =
-            catRes.data.Catalogs[0]?.Id || catRes.data.Catalogs[0]?.CatalogId;
-          if (!cid) return [];
+            const items = itemsRes?.data?.Items || itemsRes?.data?.Products || [];
+            return items.map((p: any) => normalizeProduct(p, sid)).filter((p: any) => p.imageUrl && p.price > 0);
+          } catch (e) { return []; }
+        });
 
-          // 2. Fetch specific items
-          const itemsRes = await axios
-            .get(
-              `https://api.impact.com/Mediapartners/${sid}/Catalogs/${cid}/Items`,
-              {
-                headers: {
-                  Accept: "application/json",
-                  Authorization: header,
-                },
-                params: { PageSize: 10, Page: impactPage },
-                timeout: 5000,
-              },
-            )
-            .catch((e) => {
-              // Try ItemSearch fallback
-              return axios
-                .get(
-                  `https://api.impact.com/Mediapartners/${sid}/Catalogs/ItemSearch`,
-                  {
-                    headers: {
-                      Accept: "application/json",
-                      Authorization: header,
-                    },
-                    params: {
-                      CatalogId: cid,
-                      PageSize: 10,
-                      Page: impactPage,
-                      QueryString: "*",
-                    },
-                    timeout: 5000,
-                  },
-                )
-                .catch((e2) => {
-                  console.error(
-                    "Impact Items API Error:",
-                    e2.response?.data || e2.message,
-                  );
-                  return null;
-                });
-            });
-
-          if (!itemsRes || !itemsRes.data) return [];
-          const items = itemsRes.data.Items || itemsRes.data.Products || [];
-          return items
-            .map((p: any) => normalizeProduct(p, sid))
-            .filter((p: any) => p.imageUrl && p.price > 0);
-        } catch (e) {
-          return [];
+        const results = await Promise.all(partnerRequests);
+        const products = results.flat();
+        if (products.length > 0) {
+          console.log(`[FeedHandler] Returning ${products.length} from Impact`);
+          return res.json(products);
         }
-      });
-
-      const results = await Promise.all(partnerRequests);
-      const products = results.flat();
-
-      if (products.length > 0) {
-        return res.json(products);
-      } else {
-        console.log(
-          "Impact Live Fetch returned 0 items, falling back to mock.",
-        );
+      } catch (apiError: any) {
+        console.error("[FeedHandler] Impact API error (falling back):", apiError.message);
       }
-    } else {
-      console.log("No Impact Creds, falling back to mock.");
     }
 
-    // Final fallback to mock data
-    console.log(`[FeedHandler] Fallback to Mock Data for page ${page}`);
-    const mock = generateMockProducts(10, page);
-    return res.status(200).json(mock);
+    // 4. Guaranteed Mock Fallback
+    console.log(`[FeedHandler] Guaranteed Mock Fallback for page ${page}`);
+    return res.json(generateMockProducts(10, page));
+
   } catch (error: any) {
-    console.error("CRITICAL FEED ERROR:", error);
-    
-    // Last ditch attempt to avoid 500
+    console.error("FATAL FEED HANDLER ERROR:", error);
     try {
-      return res.status(200).json(generateMockProducts(10, page));
-    } catch (e: any) {
-      console.error("TOTAL FAILURE:", e);
-      return res.status(500).json({ 
-        error: "Unrecoverable Feed Error", 
-        message: error.message || String(error)
-      });
+      return res.json(generateMockProducts(10, page));
+    } catch (finalError) {
+      return res.status(500).json({ error: "Total System Failure", details: error.message });
     }
   }
 };

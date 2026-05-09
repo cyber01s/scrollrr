@@ -171,52 +171,66 @@ export default function ProductCard({ product, index }: ProductCardProps) {
           whileInView={{ scale: 1.0 }}
           transition={MOTION.easeSlow}
         >
-          {imgMeta && !imgMeta.hasBg ? (
-            <div
-              className="w-full h-full flex items-center justify-center p-8"
+          <div
+            className="w-full h-full flex items-center justify-center relative overflow-hidden transition-colors duration-1000"
+            style={{
+              backgroundColor: imgMeta?.dominantColor || "rgb(15, 15, 15)",
+            }}
+          >
+            {/* Immersive Blurred Background */}
+            <motion.div 
+              className="absolute inset-0 opacity-40 scale-110 blur-3xl saturate-150 pointer-events-none"
               style={{
-                backgroundColor: imgMeta.dominantColor
-                  ? imgMeta.dominantColor
-                      .replace("rgb", "rgba")
-                      .replace(")", ", 0.15)")
-                  : "rgba(255, 255, 255, 0.05)",
+                backgroundImage: `url(${product.imageUrl})`,
+                backgroundSize: 'cover',
+                backgroundPosition: 'center',
               }}
-            >
-              <div
-                className="absolute inset-0 opacity-[0.02]"
-                style={{
-                  backgroundImage:
-                    "radial-gradient(circle, white 1px, transparent 1px)",
-                  backgroundSize: "24px 24px",
-                }}
-              />
-              <img
-                src={product.imageUrl}
-                alt={product.name}
-                className="w-3/4 max-h-[60%] object-contain drop-shadow-2xl"
-              />
-            </div>
-          ) : (
-            <img
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 0.4 }}
+              transition={{ duration: 1.5 }}
+            />
+
+            {/* Modern Mesh Gradient Overlay */}
+            <div 
+              className="absolute inset-0 opacity-40 pointer-events-none"
+              style={{
+                background: `radial-gradient(circle at 20% 20%, rgba(255,255,255,0.1) 0%, transparent 40%),
+                             radial-gradient(circle at 80% 80%, rgba(0,0,0,0.3) 0%, transparent 40%)`
+              }}
+            />
+            
+            <div
+              className="absolute inset-0 opacity-[0.05] pointer-events-none"
+              style={{
+                backgroundImage:
+                  "radial-gradient(circle, white 0.5px, transparent 0.5px)",
+                backgroundSize: "40px 40px",
+              }}
+            />
+            
+            <motion.img
               src={product.imageUrl}
               alt={product.name}
-              className="w-full h-full object-cover"
+              className="relative z-10 w-[85%] h-[85%] object-contain drop-shadow-[0_25px_60px_rgba(0,0,0,0.5)]"
+              initial={{ opacity: 0, scale: 0.92, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              transition={{ duration: 0.8, delay: 0.2, ease: [0.16, 1, 0.3, 1] }}
             />
-          )}
-          <div className="absolute inset-0 vignette" />
+          </div>
+          <div className="absolute inset-0 vignette pointer-events-none" />
         </motion.div>
       </div>
 
       {/* Bottom Content Panel */}
       <motion.div
-        className="absolute bottom-0 left-0 w-full px-[20px] pb-[32px] pt-[24px] z-10 safe-bottom flex flex-col"
+        className="absolute bottom-0 left-0 w-full px-[20px] pb-[32px] pt-[60px] z-10 safe-bottom flex flex-col bg-gradient-to-t from-black/90 via-black/50 to-transparent"
         initial={{ y: 24, opacity: 0 }}
         whileInView={{ y: 0, opacity: 1 }}
         viewport={{ once: true }}
         transition={{ ...MOTION.easeSlow, delay: 0.3 }}
       >
         <motion.div
-          className="text-[10px] uppercase font-normal tracking-[0.12em] text-white/60 mb-2"
+          className="text-[10px] uppercase font-normal tracking-[0.12em] text-white/80 mb-2 drop-shadow-sm"
           initial={{ letterSpacing: "0.08em" }}
           whileInView={{ letterSpacing: "0.12em" }}
           transition={{ duration: 0.4 }}
@@ -225,14 +239,14 @@ export default function ProductCard({ product, index }: ProductCardProps) {
         </motion.div>
 
         <h1 
-          className="text-[20px] font-medium leading-[1.2] text-white max-w-[75%] mb-3"
+          className="text-[20px] font-medium leading-[1.2] text-white max-w-[75%] mb-3 drop-shadow-md"
           style={{ display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}
         >
           {product.name}
         </h1>
 
         <div className="flex items-center gap-4 mb-2">
-          <div className="flex items-center gap-2 text-[13px] text-white/70 font-medium tracking-wide">
+          <div className="flex items-center gap-2 text-[13px] text-white/90 font-medium tracking-wide drop-shadow-sm">
             <span>★ {product.rating}</span>
             <div className="w-[1px] h-3 bg-white/30" />
             <span>{product.reviewCount > 999
@@ -242,13 +256,13 @@ export default function ProductCard({ product, index }: ProductCardProps) {
         </div>
 
         <div className="flex items-center gap-3 mb-6">
-          <span className="text-[24px] font-bold tracking-tight">${product.price}</span>
+          <span className="text-[24px] font-bold tracking-tight text-white drop-shadow-md">${product.price}</span>
           {product.originalPrice && (
             <>
-              <span className="text-[14px] font-normal text-white/45 line-through">
+              <span className="text-[14px] font-normal text-white/60 line-through drop-shadow-sm">
                 ${product.originalPrice}
               </span>
-              <span className="text-[11px] font-bold px-2 py-[2px] bg-[#FF5A25] rounded-[100px] text-white">
+              <span className="text-[11px] font-bold px-2 py-[2px] bg-[#FF5A25] rounded-[100px] text-white shadow-lg">
                 -{Math.round(((product.originalPrice - product.price) / product.originalPrice) * 100)}%
               </span>
             </>
