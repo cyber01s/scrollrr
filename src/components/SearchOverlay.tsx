@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence } from 'motion/react';
 import { Search, X } from 'lucide-react';
 import { useFeedStore } from '../store/feed';
 import { MOTION } from '../lib/motion';
@@ -26,7 +26,7 @@ export default function SearchOverlay() {
         setIsSearching(true);
         try {
           const API_BASE = '';
-          const url = `/search?q=${encodeURIComponent(query)}`;
+          const url = `/api/search?q=${encodeURIComponent(query)}`;
           
           const res = await fetch(url);
           const data = await res.json();

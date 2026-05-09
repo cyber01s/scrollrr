@@ -1,7 +1,7 @@
 import React from 'react';
 import { Search } from 'lucide-react';
 import { useFeedStore } from '../store/feed';
-import { motion } from 'framer-motion';
+import { motion } from 'motion/react';
 
 export default function TopBar() {
   const setSearchMode = useFeedStore((state) => state.setSearchMode);

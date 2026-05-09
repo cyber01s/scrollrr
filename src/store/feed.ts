@@ -34,9 +34,11 @@ export const useFeedStore = create<FeedState>()(
       isLoading: false,
 
       setCards: (cards) => set({ cards }),
-      appendCards: (newCards) => set((state) => ({ 
-        cards: [...state.cards, ...newCards.filter(nc => !state.cards.find(c => c.id === nc.id))] 
-      })),
+      appendCards: (newCards) => set((state) => {
+        const filtered = newCards.filter(nc => !state.cards.find(c => c.id === nc.id));
+        if (filtered.length === 0) return state;
+        return { cards: [...state.cards, ...filtered] };
+      }),
       setCurrentIndex: (currentIndex) => set({ currentIndex }),
       toggleLike: (id) => set((state) => {
         const nextLikedIds = new Set(state.likedIds);

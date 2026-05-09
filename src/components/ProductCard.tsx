@@ -4,7 +4,7 @@ import {
   useScroll,
   useTransform,
   AnimatePresence,
-} from "framer-motion";
+} from "motion/react";
 import { Heart, Share2, Info, Star, ArrowRight, Sparkles, AlertCircle, Loader2 } from "lucide-react";
 import { Product } from "../types/product";
 import { useFeedStore } from "../store/feed";
@@ -34,8 +34,7 @@ export default function ProductCard({ product, index }: ProductCardProps) {
   } | null>(null);
 
   useEffect(() => {
-    const API_BASE = '';
-    const url = `/image?url=${encodeURIComponent(product.imageUrl)}`;
+    const url = `/api/image?url=${encodeURIComponent(product.imageUrl)}`;
     fetch(url)
       .then((res) => (res.ok ? res.json() : Promise.reject("Not ok")))
       .then((data) => {
@@ -52,8 +51,7 @@ export default function ProductCard({ product, index }: ProductCardProps) {
   }, [product.imageUrl]);
 
   const handleShopNow = async () => {
-    const API_BASE = '';
-    const url = `/track`;
+    const url = `/api/track`;
     fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -84,13 +82,39 @@ export default function ProductCard({ product, index }: ProductCardProps) {
     setSpecsLoading(true);
     setSpecsError(false);
     try {
-      const API_BASE = '';
-      const url = `/analyze?url=${encodeURIComponent(product.imageUrl)}&name=${encodeURIComponent(product.name)}&category=${encodeURIComponent(product.category)}`;
-      const res = await fetch(url);
-      if (!res.ok) throw new Error("Failed");
-      const data = await res.json();
-      setSmartSpecs(data);
-    } catch {
+      const { GoogleGenAI } = await import("@google/genai");
+      // Use process.env.GEMINI_API_KEY as per gemini-api skill instructions for React (Vite)
+      const apiKey = process.env.GEMINI_API_KEY;
+      
+      if (!apiKey) {
+        throw new Error("No API key available");
+      }
+
+      const ai = new GoogleGenAI({ apiKey });
+      const prompt = `You are a gear expert. Summarize the key specifications, materials, or features of this product in exactly 3 short bullet points (max 5 words each). Product Name: ${product.name}. Category: ${product.category}. Return ONLY a JSON array of 3 strings. Example: ["Carbon steel", "Waterproof", "Lightweight"]`;
+      
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: prompt,
+      });
+
+      const text = response.text || "";
+      let specs = ["Premium Quality", "Durable Build", "High Performance"];
+      
+      try {
+        const match = text.match(/\[.*\]/s);
+        if (match) {
+          specs = JSON.parse(match[0]);
+        } else {
+          specs = JSON.parse(text);
+        }
+      } catch (e) {
+        console.error("Failed to parse Gemini response:", text);
+      }
+      
+      setSmartSpecs(specs);
+    } catch (error) {
+      console.error("AI Analysis error:", error);
       setSpecsError(true);
     } finally {
       setSpecsLoading(false);

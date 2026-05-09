@@ -74,7 +74,7 @@ app.use((req, res, next) => {
 app.use(express.json());
 
 // Expose app for Vercel
-export default app;
+// Moving to bottom to ensure all routes are registered
 
 // Impact.com credentials (REQUIRED)
 // Support comma-separated SIDs/Tokens for "all partners" request
@@ -267,16 +267,15 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
       }
 
       if (count > 0) {
+        // Optimized pagination: fetch only what is needed for the requested page
         const page = parseInt(req.query.page as string) || 0;
         const pageSize = 10;
         
-        // In a real app we'd use startAfter, but here we'll just query more and slice
-        // to keep it simple since we're just reading a dump of products
-        const q = query(collection(db, "products"), orderBy("id"));
+        const q = query(collection(db, "products"), orderBy("id"), fsLimit(pageSize * (page + 1)));
         const snapshot = await getDocs(q);
-        let products = snapshot.docs.map(doc => doc.data());
+        const products = snapshot.docs.map(doc => doc.data());
         
-        // Implement simple pagination
+        // Return only the current page's products
         const start = page * pageSize;
         const pagedProducts = products.slice(start, start + pageSize);
         
@@ -389,8 +388,6 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
   }
 };
 
-app.get(["/api/feed", "/feed"], feedHandler);
-
 const searchHandler = async (req: express.Request, res: express.Response) => {
   try {
     const searchQuery = req.query.q as string;
@@ -417,7 +414,6 @@ const searchHandler = async (req: express.Request, res: express.Response) => {
       const partnerRequests = SIDs.map(async (rawSid, index) => {
         const { sid, header } = getAuth(index);
         try {
-          // First get all catalogs for this partner
           const catResponse = await axios.get(
             `https://api.impact.com/Mediapartners/${sid}/Catalogs/`,
             {
@@ -442,17 +438,14 @@ const searchHandler = async (req: express.Request, res: express.Response) => {
                     Authorization: header,
                   },
                   params: {
-                    QueryString: query, // Using QueryString as it's common, fallback to Keywords
+                    QueryString: searchQuery,
                     PageSize: 10,
                     Page: 1,
                     ...(cid ? { CatalogId: cid } : {}),
                   },
                 },
               )
-              .catch((e) => {
-                // Silently skip
-                return null;
-              }),
+              .catch(() => null),
           );
 
           const responses = await Promise.all(searchPromises);
@@ -465,7 +458,6 @@ const searchHandler = async (req: express.Request, res: express.Response) => {
 
           return allItems;
         } catch (e: any) {
-          // Silently skip search errors
           return [];
         }
       });
@@ -486,14 +478,11 @@ const searchHandler = async (req: express.Request, res: express.Response) => {
   }
 };
 
-app.get(["/api/search", "/search"], searchHandler);
-
 const imageHandler = async (req: express.Request, res: express.Response) => {
   try {
     const imageUrl = req.query.url as string;
     if (!imageUrl) return res.status(400).send("URL required");
 
-    // Use Redis for image metadata caching
     const imgCacheKey = `img:meta:${Buffer.from(imageUrl).toString("base64").substring(0, 100)}`;
     if (redis) {
       const cached = await redis.get(imgCacheKey);
@@ -519,68 +508,13 @@ const imageHandler = async (req: express.Request, res: express.Response) => {
     };
 
     if (redis)
-      await redis.set(imgCacheKey, JSON.stringify(result), "EX", 86400 * 7); // 7 days cache
+      await redis.set(imgCacheKey, JSON.stringify(result), "EX", 86400 * 7);
 
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: "Image processing failed" });
   }
 };
-
-app.get(["/api/image", "/image"], imageHandler);
-
-const analyzeHandler = async (req: express.Request, res: express.Response) => {
-  try {
-    const { url, name, category } = req.query;
-    if (!url) return res.status(400).json({ error: "URL required" });
-
-    // Use Redis for caching AI specs
-    const cacheKey = `ai:specs:${Buffer.from(url as string).toString("base64").substring(0, 100)}`;
-    if (redis) {
-      const cached = await redis.get(cacheKey);
-      if (cached) return res.json(JSON.parse(cached));
-    }
-
-    if (!process.env.GEMINI_API_KEY) {
-      return res.status(500).json({ error: "No AI key configured" });
-    }
-
-    const { GoogleGenAI } = await import("@google/genai");
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-
-    // We can fetch the image and pass as base64 or just pass the parameters
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: [
-        `You are a gear expert. Summarize the key specifications, materials, or features of this product in exactly 3 short bullet points (max 5 words each). Product Name: ${name}. Category: ${category}. Return ONLY a JSON array of 3 strings. Example: ["Carbon steel", "Waterproof", "Lightweight"]`
-      ]
-    });
-
-    const text = response.text || "";
-    let specs = ["Premium Quality", "Durable Build", "High Performance"];
-    try {
-      const match = text.match(/\[.*\]/s);
-      if (match) {
-        specs = JSON.parse(match[0]);
-      } else {
-        specs = JSON.parse(text);
-      }
-    } catch (e) {
-      console.log("Failed to parse Gemini response", text);
-    }
-
-    if (redis) {
-      await redis.set(cacheKey, JSON.stringify(specs), "EX", 86400 * 7); // 7 days cache
-    }
-
-    res.json(specs);
-  } catch (error: any) {
-    console.error("AI Analysis error:", error.message);
-    res.status(500).json({ error: "Could not generate specs" });
-  }
-};
-
-app.get(["/api/analyze", "/analyze"], analyzeHandler);
 
 const trackHandler = async (req: express.Request, res: express.Response) => {
   const { productId, source, sessionId } = req.body;
@@ -602,7 +536,16 @@ const trackHandler = async (req: express.Request, res: express.Response) => {
   res.status(202).send();
 };
 
-app.post(["/api/track", "/track"], trackHandler);
+app.get("/api/feed", feedHandler);
+app.get("/api/search", searchHandler);
+app.get("/api/image", imageHandler);
+app.post("/api/track", trackHandler);
+
+// Force JSON for all /api routes and provide a 404 if not matched
+app.all("/api/*", (req, res) => {
+  console.log(`[404] API Route Not Found: ${req.url}`);
+  res.status(404).json({ error: `API route ${req.url} not found` });
+});
 
 // Vite middleware for development
 async function startServer() {
@@ -631,6 +574,8 @@ async function startServer() {
 if (!process.env.VERCEL) {
   startServer();
 }
+
+export default app;
 
 function generateMockProducts(count: number, page: number): any[] {
   const categories = [

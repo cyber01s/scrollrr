@@ -8,7 +8,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import Feed from './components/Feed';
 import TopBar from './components/TopBar';
 import SearchOverlay from './components/SearchOverlay';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence } from 'motion/react';
 import { useFeedStore } from './store/feed';
 
 const queryClient = new QueryClient();

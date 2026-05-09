@@ -5,20 +5,26 @@ import { useFeedStore } from '../store/feed';
 import { Product } from '../types/product';
 
 export default function Feed() {
-  const { cards, appendCards, currentIndex, setCurrentIndex, isSearchMode, searchResults } = useFeedStore();
+  const { currentIndex, setCurrentIndex, isSearchMode, searchResults } = useFeedStore();
   const observerTarget = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const fetchFeed = async ({ pageParam = 0 }) => {
     try {
-      const API_BASE = '';
-      const url = `/feed?page=${pageParam}`;
+      const url = `/api/feed?page=${pageParam}`;
       console.log("Fetching feed from:", url);
       
       const res = await fetch(url);
       if (!res.ok) {
-        throw new Error(`HTTP error! status: ${res.status}`);
+        throw new Error(`Server returned ${res.status}: ${res.statusText} for ${url}`);
       }
+      
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        console.error("Non-JSON response received:", await res.text().then(t => t.substring(0, 200)));
+        throw new Error("Expected JSON response from server, but received something else. This usually means the API route is missing or pointing to the wrong place.");
+      }
+      
       return await res.json();
     } catch (e) {
       console.error("Feed fetch failed:", e);
@@ -42,26 +48,23 @@ export default function Feed() {
       (lastPage && Array.isArray(lastPage) && lastPage.length > 0) ? allPages.length : undefined,
   });
 
-  useEffect(() => {
-    if (data) {
-      const allProducts = data.pages.flat();
-      if (allProducts.length > 0) {
-        appendCards(allProducts);
-      }
-    }
-  }, [data, appendCards]);
-
   const handleScroll = useCallback(() => {
     if (!containerRef.current) return;
     const scrollY = containerRef.current.scrollTop;
-    const index = Math.round(scrollY / window.innerHeight);
-    setCurrentIndex(index);
+    const h = window.innerHeight;
+    const index = Math.round(scrollY / h);
+    
+    if (index !== currentIndex) {
+      setCurrentIndex(index);
+    }
 
-    // Infinite scroll trigger: when we are 4 cards from the end
-    if (index >= cards.length - 4 && !isFetchingNextPage && hasNextPage) {
+    const allProducts = data?.pages.flat() || [];
+    const totalCards = isSearchMode ? searchResults.length : allProducts.length;
+    
+    if (!isSearchMode && totalCards > 0 && index >= totalCards - 2 && !isFetchingNextPage && hasNextPage) {
       fetchNextPage();
     }
-  }, [cards.length, isFetchingNextPage, hasNextPage, fetchNextPage, setCurrentIndex]);
+  }, [data?.pages, isFetchingNextPage, hasNextPage, fetchNextPage, setCurrentIndex, currentIndex, isSearchMode, searchResults.length]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -71,7 +74,7 @@ export default function Feed() {
     }
   }, [handleScroll]);
 
-  const displayCards = isSearchMode && searchResults.length > 0 ? searchResults : cards;
+  const displayCards = (isSearchMode && searchResults.length > 0) ? searchResults : (data?.pages.flat() || []);
 
   if (isError) {
     return (
@@ -98,7 +101,7 @@ export default function Feed() {
     >
       {displayCards.map((product, index) => (
         <ProductCard 
-          key={product.id + index} 
+          key={product.id} 
           product={product} 
           index={index} 
         />
