@@ -3,19 +3,17 @@ import path from "path";
 import { fileURLToPath } from "url";
 import axios from "axios";
 import dotenv from "dotenv";
-import { initializeApp } from "firebase/app";
+import { getApps, initializeApp } from "firebase/app";
 import {
   getFirestore,
   collection,
-  doc,
-  setDoc,
-  getDocs,
   query,
   orderBy,
   limit as fsLimit,
-  getCountFromServer,
-  addDoc,
-  where
+  getDocs,
+  doc,
+  setDoc,
+  addDoc
 } from "firebase/firestore";
 import fs from "fs";
 import cors from "cors";
@@ -59,24 +57,20 @@ async function initInfrastructure() {
   infraPromise = (async () => {
     console.log("[Infra] Starting initialization...");
     
-    // Firebase Only
     try {
-      const configPaths = [
-        path.join(process.cwd(), "firebase-applet-config.json"),
-        "./firebase-applet-config.json"
-      ];
-      let configPath = configPaths.find(p => fs.existsSync(p));
-      
-      if (configPath) {
-        const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-        const firebaseApp = initializeApp(firebaseConfig);
-        db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
-        console.log("[Firebase] Initialized successfully.");
-      } else {
-        console.warn("[Firebase] Config not found in mapped paths.");
+      const configPath = "firebase-applet-config.json";
+      if (fs.existsSync(configPath)) {
+        const configRaw = fs.readFileSync(configPath, "utf-8");
+        if (configRaw && configRaw.trim()) {
+          const firebaseConfig = JSON.parse(configRaw);
+          const apps = getApps();
+          const firebaseApp = apps.length === 0 ? initializeApp(firebaseConfig) : apps[0];
+          db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
+          console.log(`[Firebase] Active. Apps: ${apps.length}`);
+        }
       }
-    } catch (e) {
-      console.error("[Firebase] Init failed:", e);
+    } catch (e: any) {
+      console.error("[Firebase] Init error:", e.message || e);
     }
   })();
 
@@ -85,16 +79,17 @@ async function initInfrastructure() {
 
 // Removed early infra call for Vercel. Handlers will call it lazily.
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 app.use(cors());
 app.use(express.json());
 
-// Global logging
-app.use((req, res, next) => {
+// Request tracking
+app.use((req: any, res, next) => {
+  req.requestId = Math.random().toString(36).substring(7);
   const timestamp = new Date().toISOString();
   if (req.path !== "/api/health") {
-    console.log(`[${timestamp}] ${req.method} ${req.url}`);
+    console.log(`[${timestamp}][${req.requestId}] ${req.method} ${req.url}`);
   }
   next();
 });
@@ -211,28 +206,23 @@ async function syncImpactProducts() {
 
 // Standardize feed error handling
 const feedHandler = async (req: express.Request, res: express.Response) => {
+  await initInfrastructure();
   const page = parseInt(req.query.page as string) || 0;
-  const requestId = Math.random().toString(36).substring(7);
+  const requestId = (req as any).requestId || Math.random().toString(36).substring(7);
   console.log(`[Feed][${requestId}] Request start: page=${page}`);
 
   let isResponseSent = false;
 
-  // Global safety timeout (ensure we return SOMETHING before Vercel kills us)
+  // Global safety timeout
   const timeoutId = setTimeout(() => {
     if (!isResponseSent) {
       isResponseSent = true;
-      console.warn(`[Feed][${requestId}] Vercel timeout imminent (9s). Returning mock data.`);
+      console.warn(`[Feed][${requestId}] Request timeout (9s). Returning mock data.`);
       res.json(generateMockProducts(12, page));
     }
   }, 9000);
 
   try {
-    // 1. Lazy infra init
-    await Promise.race([
-      initInfrastructure(),
-      new Promise(resolve => setTimeout(resolve, 2000))
-    ]);
-
     // 2. Try Firestore
     if (db) {
       try {
@@ -300,7 +290,7 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
     }
 
   } catch (err: any) {
-    console.error(`[Feed][${requestId}] FATAL:`, err.message);
+    console.error(`[Feed][${requestId}] TOP LEVEL ERROR:`, err.stack || err.message || err);
     if (!isResponseSent) {
       isResponseSent = true;
       clearTimeout(timeoutId);
@@ -311,6 +301,7 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
 
 
 const searchHandler = async (req: express.Request, res: express.Response) => {
+  await initInfrastructure();
   try {
     const searchQuery = req.query.q as string;
     if (!searchQuery) return res.json([]);
@@ -408,6 +399,7 @@ const searchHandler = async (req: express.Request, res: express.Response) => {
 };
 
 const imageHandler = async (req: express.Request, res: express.Response) => {
+  await initInfrastructure();
   try {
     const imageUrl = req.query.url as string;
     if (!imageUrl) return res.status(400).send("URL required");
@@ -424,6 +416,7 @@ const imageHandler = async (req: express.Request, res: express.Response) => {
 };
 
 const trackHandler = async (req: express.Request, res: express.Response) => {
+  await initInfrastructure();
   const { productId, source, sessionId } = req.body;
   console.log("Tracking click:", req.body);
 
