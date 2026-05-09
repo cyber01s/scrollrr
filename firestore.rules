@@ -1,11 +1,50 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /products/{document=**} {
-      allow read, write: if true;
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
     }
-    match /click_tracking/{document=**} {
-      allow read, write: if true;
+
+    // Primitives
+    function isSignedIn() { return request.auth != null; }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+
+    // Products: Read-only for everyone, Write restricted (schema validated)
+    match /products/{productId} {
+      allow read, list: if true; 
+      
+      // For this specific app, the server handles sync using the client SDK.
+      // We enforce strict schema validation to prevent junk data.
+      allow create, update: if (
+        isValidProduct(incoming()) && (
+          request.method == 'create' || 
+          (request.method == 'update' && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'category', 'imageUrl', 'price', 'originalPrice', 'currency', 'rating', 'reviewCount', 'specs', 'affiliateUrl', 'campaignId']))
+        )
+      );
+    }
+
+    // Click Tracking: Create-only for analytics
+    match /click_tracking/{trackingId} {
+      allow create: if isValidClickTracking(incoming());
+      allow read, update, delete: if false;
+    }
+
+    // Validation Helpers
+    function isValidProduct(data) {
+      return data.keys().hasAll(['id', 'name', 'imageUrl', 'price']) &&
+             data.id is string && data.id.size() <= 128 &&
+             data.name is string && data.name.size() <= 200 &&
+             data.imageUrl is string && data.imageUrl.size() <= 1000 &&
+             data.price is number && data.price >= 0;
+    }
+
+    function isValidClickTracking(data) {
+      return data.keys().hasAll(['product_id', 'created_at']) &&
+             data.product_id is string && data.product_id.size() <= 128 &&
+             data.created_at is string && data.created_at.size() <= 64;
     }
   }
 }

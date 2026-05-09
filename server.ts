@@ -34,6 +34,30 @@ let redis: any = null;
 let db: any = null;
 let infraPromise: Promise<void> | null = null;
 
+// Firebase Diagnostics
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    operationType,
+    path,
+    authInfo: {
+      userId: null, // Server-side usage without explicit auth session
+      email: null,
+    }
+  };
+  console.error('[Firestore Error Details]:', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
 async function initInfrastructure() {
   if (infraPromise) return infraPromise;
   
@@ -95,18 +119,18 @@ async function initInfrastructure() {
 }
 
 // Ensure infra is initialized with a timeout
-async function ensureInfra() {
+async function ensureInfra(ms = 1500) {
   const p = initInfrastructure();
   try {
-    const timeout = new Promise(resolve => setTimeout(resolve, 800)); // Tighten to 800ms
+    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Infra Timeout")), ms));
     await Promise.race([p, timeout]);
   } catch (e) {
-    console.warn("[Infra] Timeout or error during ensureInfra:", e);
+    console.warn("[Infra] Initialization taking longer than expected, moving on...");
   }
 }
 
 // Top-level infra init (non-blocking)
-initInfrastructure().catch(e => console.error("[Server] Early infra init failed (non-blocking):", e.message));
+initInfrastructure().catch(e => console.error("[Server] Early infra init failed:", e.message));
 
 const app = express();
 const PORT = 3000;
@@ -114,14 +138,16 @@ const PORT = 3000;
 app.use(cors());
 app.use(express.json());
 
+// Global logging
 app.use((req, res, next) => {
   const timestamp = new Date().toISOString();
-  console.log(`[${timestamp}] ${req.method} ${req.url} (Path: ${req.path})`);
+  if (req.path !== "/api/health") {
+    console.log(`[${timestamp}] ${req.method} ${req.url}`);
+  }
   next();
 });
 
 // Impact.com credentials (REQUIRED)
-// Support comma-separated SIDs/Tokens for "all partners" request
 const SIDs = (process.env.IMPACT_ACCOUNT_SID || "")
   .split(",")
   .map((s) => s.trim())
@@ -135,21 +161,12 @@ const PROGRAM_IDS = (process.env.IMPACT_PROGRAM_ID || "")
   .map((s) => s.trim())
   .filter(Boolean);
 
-// Optional/Configurable
-const IMPACT_ACTION_ID = "15219";
 const IMPACT_PARTNER_PROPERTY_ID = "6988584";
-
 const hasImpactCreds = SIDs.length > 0 && TOKENS.length > 0;
 
 function getAuth(index: number) {
   let sid = SIDs[index] || SIDs[0];
   let token = TOKENS[index] || TOKENS[0];
-  // Auto-swap if they accidentally put the Token in the SID field
-  if (sid && token && sid.length > 20 && token.length < 15) {
-    const temp = sid;
-    sid = token;
-    token = temp;
-  }
   return {
     sid,
     token,
@@ -161,54 +178,28 @@ function normalizeProduct(raw: any, sid: string) {
   if (!raw) return null;
   
   const price = parseFloat(String(raw.Price || raw.CurrentPrice || "0"));
-  const originalPrice = raw.OriginalPrice
-    ? parseFloat(String(raw.OriginalPrice))
-    : null;
-
+  const originalPrice = raw.OriginalPrice ? parseFloat(String(raw.OriginalPrice)) : null;
   const campaignId = String(raw.CatalogId || PROGRAM_IDS[0] || "1236776");
-  const actionId = SIDs.length > 0 ? "15219" : "";
-
-  const destUrl = String(
-    raw.TrackingUrl ||
-    raw.TrackingLink ||
-    raw.ProductUrl ||
-    raw.Url ||
-    "https://www.buybestgear.com"
-  );
+  const destUrl = String(raw.TrackingUrl || raw.TrackingLink || raw.ProductUrl || raw.Url || "https://www.buybestgear.com");
 
   let affiliateUrl = destUrl;
-  if (
-    sid &&
-    !affiliateUrl.includes("/c/") &&
-    !affiliateUrl.includes("sjv.io") &&
-    !affiliateUrl.includes("impact.com")
-  ) {
+  if (sid && !affiliateUrl.includes("/c/") && !affiliateUrl.includes("sjv.io") && !affiliateUrl.includes("impact.com")) {
     affiliateUrl = `https://buybestgear.sjv.io/c/${sid}/${campaignId}?u=${encodeURIComponent(destUrl)}&partnerpropertyid=${IMPACT_PARTNER_PROPERTY_ID}`;
   }
 
   const desc = String(raw.Description || "");
 
   return {
-    id: String(
-      raw.Id || raw.ProductId || Math.random().toString(36).substring(7),
-    ),
+    id: String(raw.Id || raw.ProductId || Math.random().toString(36).substring(7)),
     name: String(raw.Name || raw.ProductName || "Premium Gear"),
     category: String(raw.Category || "Discovery"),
     imageUrl: String(raw.ImageUri || raw.ImageLink || raw.ImageUrl || ""),
     price: isNaN(price) ? 0 : price,
-    originalPrice:
-      originalPrice && originalPrice > price ? originalPrice : null,
+    originalPrice: originalPrice && originalPrice > price ? originalPrice : null,
     currency: String(raw.Currency || "USD"),
     rating: raw.Rating ? parseFloat(String(raw.Rating)) : 4.8,
-    reviewCount: raw.ReviewCount
-      ? parseInt(String(raw.ReviewCount))
-      : Math.floor(Math.random() * 2000),
-    specs: desc
-      ? desc.split(".")
-          .slice(0, 2)
-          .map((s: string) => s.trim())
-          .filter(Boolean)
-      : ["High Performance", "Minimalist Design"],
+    reviewCount: raw.ReviewCount ? parseInt(String(raw.ReviewCount)) : Math.floor(Math.random() * 2000),
+    specs: desc ? desc.split(".").slice(0, 2).map((s: string) => s.trim()).filter(Boolean) : ["High Performance", "Minimalist Design"],
     affiliateUrl,
     campaignId,
   };
@@ -218,84 +209,49 @@ let isSyncing = false;
 async function syncImpactProducts() {
   if (!db || !hasImpactCreds || isSyncing) return;
   isSyncing = true;
-  console.log("Background Sync: Fetching products from Impact API...");
+  console.log("[Sync] Triggered background catalog update...");
 
   try {
     for (let i = 0; i < SIDs.length; i++) {
       const { sid, header } = getAuth(i);
-      const catRes = await axios
-        .get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/`, {
-          headers: { Accept: "application/json", Authorization: header },
-        })
-        .catch(() => null);
+      const catRes = await axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/`, {
+        headers: { Accept: "application/json", Authorization: header },
+        timeout: 5000
+      }).catch(() => null);
 
-      if (!catRes || !catRes.data || !catRes.data.Catalogs) continue;
+      if (!catRes?.data?.Catalogs) continue;
+      
       const catalogs = catRes.data.Catalogs;
-      const activeCatalogs = (catalogs as any[])
-        .sort(() => Math.random() - 0.5)
-        .slice(0, 5);
+      const activeCatalogs = (catalogs as any[]).slice(0, 2); // Only sync 2 catalogs to keep it fast
 
       for (const cat of activeCatalogs) {
         const cid = cat.Id || cat.CatalogId;
         if (!cid) continue;
 
-        let itemsRes = await axios
-          .get(
-            `https://api.impact.com/Mediapartners/${sid}/Catalogs/${cid}/Items`,
-            {
-              headers: { Accept: "application/json", Authorization: header },
-              params: { PageSize: 50, Page: 1 },
-            },
-          )
-          .catch(() => null);
+        const itemsRes = await axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/${cid}/ItemSearch`, {
+          headers: { Accept: "application/json", Authorization: header },
+          params: { PageSize: 50, Page: 1, QueryString: "*" },
+          timeout: 8000
+        }).catch(() => null);
 
-        if (!itemsRes) {
-          itemsRes = await axios
-            .get(
-              `https://api.impact.com/Mediapartners/${sid}/Catalogs/ItemSearch`,
-              {
-                headers: {
-                  Accept: "application/json",
-                  Authorization: header,
-                },
-                params: {
-                  CatalogId: cid,
-                  PageSize: 50,
-                  Page: 1,
-                  QueryString: "*",
-                },
-              },
-            )
-            .catch(() => null);
-        }
-
-        if (!itemsRes || !itemsRes.data) continue;
+        if (!itemsRes?.data) continue;
         const items = itemsRes.data.Items || itemsRes.data.Products || [];
 
         for (const raw of items) {
           const p = normalizeProduct(raw, sid);
-          if (!p.imageUrl || p.price === 0) continue; // Skip bad data
+          if (!p || !p.imageUrl || p.price === 0) continue;
 
-          await setDoc(doc(db, "products", p.id), {
-            id: p.id,
-            name: p.name,
-            category: p.category,
-            imageUrl: p.imageUrl,
-            price: p.price,
-            originalPrice: p.originalPrice,
-            currency: p.currency,
-            rating: p.rating,
-            reviewCount: p.reviewCount,
-            specs: p.specs,
-            affiliateUrl: p.affiliateUrl,
-            campaignId: p.campaignId,
-          }, { merge: true }).catch(() => {});
+          await setDoc(doc(db, "products", p.id), p, { merge: true }).catch((err) => {
+            if (err.message?.includes("permissions")) {
+              handleFirestoreError(err, OperationType.WRITE, `products/${p.id}`);
+            }
+          });
         }
       }
     }
-    console.log("Background Sync: Completed");
+    console.log("[Sync] Completed.");
   } catch (e: any) {
-    console.error("Background Sync: Failed", e.message);
+    console.error("[Sync] Failed:", e.message);
   } finally {
     isSyncing = false;
   }
@@ -304,132 +260,132 @@ async function syncImpactProducts() {
 // API Routes
 const feedHandler = async (req: express.Request, res: express.Response) => {
   const page = parseInt(req.query.page as string) || 0;
-  console.log(`[FeedHandler] Request start: page=${page}`);
+  const requestId = Math.random().toString(36).substring(7);
+  console.log(`[Feed][${requestId}] Start: page=${page}`);
 
-  try {
-    // 2. Try Firestore
-    if (db) {
-      console.log("[FeedHandler] DB exists, checking count...");
-      try {
-        const statsDoc = await getCountFromServer(collection(db, "products")).catch((e) => {
-          console.error("[FeedHandler] getCountFromServer failed:", e.message);
-          return null;
-        });
-        const count = statsDoc?.data?.().count || 0;
-        console.log(`[FeedHandler] DB reported count: ${count}`);
-        
-        if (count < 50) {
-          console.log("[FeedHandler] Low count, triggering background sync...");
-          syncImpactProducts().catch(e => console.error("[FeedHandler] Background sync fail:", e));
-        }
+  // Race between logic and global timeout
+  const timeoutMs = 8500; // 8.5s for Vercel
+  let isTimedOut = false;
 
-        if (count > 0) {
-          const pageSize = 10;
-          console.log(`[FeedHandler] Fetching page ${page} from Firestore...`);
-          const q = query(collection(db, "products"), orderBy("id"), fsLimit(pageSize * (page + 1)));
-          const snapshot = await getDocs(q);
-          const products = snapshot.docs.map(doc => doc.data());
+  const timeoutPromise = new Promise((_, reject) => {
+    setTimeout(() => {
+      isTimedOut = true;
+      reject(new Error("GATEWAY_TIMEOUT"));
+    }, timeoutMs);
+  });
+
+  const logicPromise = (async () => {
+    try {
+      await ensureInfra(1200);
+
+      // 1. Try Firestore First
+      if (db) {
+        try {
+          const statsDoc = await getCountFromServer(collection(db, "products")).catch((e) => {
+            console.error("[FeedHandler] getCountFromServer failed:", e.message);
+            if (e.message?.includes("permissions")) {
+              handleFirestoreError(e, OperationType.GET, "products");
+            }
+            return null;
+          });
+          const count = statsDoc?.data?.().count || 0;
           
-          const start = page * pageSize;
-          const pagedProducts = products.slice(start, start + pageSize);
-          
-          if (pagedProducts && pagedProducts.length > 0) {
-            console.log(`[FeedHandler] SUCCESS: Returning ${pagedProducts.length} from DB`);
-            return res.json(pagedProducts);
+          if (count < 20) {
+            syncImpactProducts().catch(() => {});
           }
-          console.log("[FeedHandler] DB page empty, falling through to API...");
-        }
-      } catch (dbError: any) {
-        console.error("[FeedHandler] Firestore error (falling through):", dbError.message);
-      }
-    }
 
-    // 3. Try Impact API
-    if (hasImpactCreds) {
-      console.log(`[FeedHandler] hasImpactCreds=true, attempting Impact API for page ${page}`);
-      try {
+          if (count > 0) {
+            const pageSize = 10;
+            const q = query(collection(db, "products"), orderBy("id"), fsLimit(pageSize * (page + 1)));
+            const snapshot = await getDocs(q).catch(e => {
+              if (e.message?.includes("permissions")) {
+                handleFirestoreError(e, OperationType.LIST, "products");
+              }
+              throw e;
+            });
+            const products = snapshot.docs.map(doc => doc.data());
+            
+            const start = page * pageSize;
+            const pagedProducts = products.slice(start, start + pageSize);
+            
+            if (pagedProducts.length > 0) {
+              console.log(`[Feed][${requestId}] Success: DB (${pagedProducts.length} items)`);
+              return pagedProducts;
+            }
+          }
+        } catch (dbError: any) {
+          console.warn(`[Feed][${requestId}] Firestore error:`, dbError.message);
+        }
+      }
+
+      // 2. Fallback to Impact API
+      if (hasImpactCreds) {
+        console.log(`[Feed][${requestId}] Attempting Impact API...`);
         const impactPage = page + 1;
+        
         const partnerRequests = SIDs.map(async (sid, i) => {
           const { header } = getAuth(i);
           try {
-            console.log(`[FeedHandler][SID:${sid.substring(0, 5)}] Requesting Catalogs...`);
             const catRes = await axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/`, {
               headers: { Accept: "application/json", Authorization: header },
-              timeout: 4000,
-            }).catch((err) => {
-              console.error(`[FeedHandler][SID:${sid.substring(0, 5)}] Catalog API failed:`, err.message);
-              return null;
-            });
+              timeout: 3000,
+            }).catch(() => null);
 
             const catalogs = catRes?.data?.Catalogs || [];
             const cid = catalogs[0]?.Id || catalogs[0]?.CatalogId;
-            
-            if (!cid) {
-              console.log(`[FeedHandler][SID:${sid.substring(0, 5)}] No active catalogs found.`);
-              return [];
-            }
+            if (!cid) return [];
 
-            console.log(`[FeedHandler][SID:${sid.substring(0, 5)}] Fetching Items for CID:${cid}...`);
             const itemsRes = await axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/${cid}/Items`, {
               headers: { Accept: "application/json", Authorization: header },
               params: { PageSize: 10, Page: impactPage },
               timeout: 4000,
-            }).catch(async (e) => {
-               console.warn(`[FeedHandler][SID:${sid.substring(0, 5)}] Items retrieval failed, trying ItemSearch:`, e.message);
-               return axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/${cid}/ItemSearch`, {
-                headers: { Accept: "application/json", Authorization: header },
-                params: { PageSize: 10, Page: impactPage, QueryString: "*" },
-                timeout: 4000,
-              }).catch((e2) => {
-                console.error(`[FeedHandler][SID:${sid.substring(0, 5)}] ItemSearch also failed:`, e2.message);
-                return null;
-              });
-            });
+            }).catch(() => axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/${cid}/ItemSearch`, {
+              headers: { Accept: "application/json", Authorization: header },
+              params: { PageSize: 10, Page: impactPage, QueryString: "*" },
+              timeout: 4000,
+            }).catch(() => null));
 
             const items = itemsRes?.data?.Items || itemsRes?.data?.Products || [];
-            if (items.length > 0) {
-              console.log(`[FeedHandler][SID:${sid.substring(0, 5)}] Found ${items.length} raw items.`);
-              return items
-                .map((p: any) => normalizeProduct(p, sid))
-                .filter((p: any) => p && p.imageUrl && p.price > 0);
-            }
+            return items.map((p: any) => normalizeProduct(p, sid)).filter((p: any) => p && p.imageUrl && p.price > 0);
+          } catch (e) {
             return [];
-          } catch (e: any) { 
-            console.error(`[FeedHandler][SID:${sid.substring(0, 3)}] Request cycle failed:`, e.message);
-            return []; 
           }
         });
 
         const results = await Promise.all(partnerRequests);
         const products = results.flat();
         if (products.length > 0) {
-          console.log(`[FeedHandler] SUCCESS: Returning ${products.length} from Impact total`);
-          return res.json(products);
+          console.log(`[Feed][${requestId}] Success: Impact (${products.length} items)`);
+          return products;
         }
-        console.warn("[FeedHandler] Impact API returned 0 valid products combined.");
-      } catch (apiError: any) {
-        console.error("[FeedHandler] Impact API major crash:", apiError.message);
       }
+
+      // 3. Last fallback: Mock data
+      console.log(`[Feed][${requestId}] Success: Mock fallback`);
+      return generateMockProducts(10, page);
+
+    } catch (e: any) {
+      console.error(`[Feed][${requestId}] Logic error:`, e.name, e.message);
+      throw e;
     }
+  })();
 
-    // 4. Guaranteed Mock Fallback
-    console.log(`[FeedHandler] SUCCESS (Fallback): Returning Mock Products for page ${page}`);
-    return res.status(200).json(generateMockProducts(10, page));
-
-  } catch (error: any) {
-    console.error("[FeedHandler] CRITICAL FATAL ERROR:", error);
-    try {
-      if (!res.headersSent) {
-        return res.status(200).json(generateMockProducts(10, page));
-      }
-    } catch (finalError: any) {
-      console.error("[FeedHandler] Recovery failed:", finalError.message);
-      if (!res.headersSent) {
-        return res.status(500).json({ error: "System failure", details: error.message });
-      }
+  try {
+    const finalProducts = await Promise.race([logicPromise, timeoutPromise]) as any[];
+    return res.json(finalProducts);
+  } catch (err: any) {
+    if (err.message === "GATEWAY_TIMEOUT" || isTimedOut) {
+      console.warn(`[Feed][${requestId}] TIMEOUT hit! Returning mock data for safety.`);
+    } else {
+      console.error(`[Feed][${requestId}] Error:`, err.message);
+    }
+    // Always return success with mock data if something goes wrong
+    if (!res.headersSent) {
+      return res.json(generateMockProducts(10, page));
     }
   }
 };
+
 
 const searchHandler = async (req: express.Request, res: express.Response) => {
   try {
@@ -439,7 +395,12 @@ const searchHandler = async (req: express.Request, res: express.Response) => {
     if (db) {
       try {
         const q = query(collection(db, "products"), fsLimit(200));
-        const snapshot = await getDocs(q);
+        const snapshot = await getDocs(q).catch(e => {
+          if (e.message?.includes("permissions")) {
+            handleFirestoreError(e, OperationType.LIST, "products");
+          }
+          throw e;
+        });
         let products = snapshot.docs.map(doc => doc.data() as any);
         products = products.filter(p => 
           (p.name && p.name.toLowerCase().includes(searchQuery.toLowerCase())) ||
@@ -587,6 +548,11 @@ const trackHandler = async (req: express.Request, res: express.Response) => {
         source: source,
         session_id: sessionId || null,
         created_at: new Date().toISOString()
+      }).catch(err => {
+        if (err.message?.includes("permissions")) {
+          handleFirestoreError(err, OperationType.CREATE, "click_tracking");
+        }
+        throw err;
       });
     } catch (err) {
       console.error("Tracking db error:", err);
