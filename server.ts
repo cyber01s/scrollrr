@@ -27,52 +27,88 @@ const __dirname = path.dirname(__filename);
 // Infrastructure Clients
 let redis: any = null;
 let db: any = null;
+let infraPromise: Promise<void> | null = null;
 
 async function initInfrastructure() {
-  console.log("Initializing Infrastructure...");
-  const rawRedisUrl = process.env.REDIS_URL || "";
-  const parsedRedisUrl = rawRedisUrl.match(/redis(?:s)?:\/\/[^\s]+/)?.[0] || rawRedisUrl;
-
-  if (parsedRedisUrl) {
-    try {
-      const { default: Redis } = await import("ioredis");
-      const redisOpts: any = { maxRetriesPerRequest: 3 };
-      if (parsedRedisUrl.includes("upstash.io") || parsedRedisUrl.startsWith("rediss://")) {
-        redisOpts.tls = { rejectUnauthorized: false };
-      }
-      redis = new Redis(parsedRedisUrl, redisOpts);
-      redis.on("error", (err: any) => console.error("Redis error:", err));
-      console.log("Redis initialized");
-    } catch (e) {
-      console.error("Redis init failed (non-critical):", e);
-    }
-  }
-
-  // Firebase Init
-  try {
-    const configPaths = [
-      path.join(process.cwd(), "firebase-applet-config.json"),
-      path.join(__dirname, "firebase-applet-config.json"),
-      "./firebase-applet-config.json"
-    ];
-    let configPath = configPaths.find(p => fs.existsSync(p));
+  if (infraPromise) return infraPromise;
+  
+  infraPromise = (async () => {
+    console.log("[Infra] Starting initialization...");
     
-    if (configPath) {
-      console.log("Loading Firebase config from:", configPath);
-      const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-      const firebaseApp = initializeApp(firebaseConfig);
-      db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
-      console.log("Firebase Firestore initialized successfully.");
-    } else {
-      console.warn("No firebase-applet-config.json found - proceeding with live/mock fallback.");
+    // Support standard REDIS_URL or UPSTASH_REDIS_URL
+    const rawRedisUrl = process.env.REDIS_URL || process.env.UPSTASH_REDIS_URL || "";
+    const redisToken = process.env.UPSTASH_REDIS_TOKEN;
+    
+    let redisUrl = rawRedisUrl.match(/redis(?:s)?:\/\/[^\s]+/)?.[0] || rawRedisUrl;
+    
+    // If it's an Upstash REST URL accidentally put into the Redis URL field, 
+    // or if we have a token but no password in the URL, try to fix it.
+    if (redisUrl && redisToken && !redisUrl.includes(":") && !redisUrl.includes("@")) {
+      // Basic attempt to construct a valid URL if only the host was provided
+      redisUrl = `rediss://default:${redisToken}@${redisUrl}`;
     }
-  } catch (e) {
-    console.error("Firebase init failed (non-critical):", e);
-  }
+
+    if (redisUrl) {
+      try {
+        console.log("[Redis] Connecting to provider...");
+        const { default: Redis } = await import("ioredis");
+        const redisOpts: any = { 
+          maxRetriesPerRequest: 1, 
+          connectTimeout: 3000,
+          lazyConnect: true 
+        };
+        if (redisUrl.includes("upstash.io") || redisUrl.startsWith("rediss://")) {
+          redisOpts.tls = { rejectUnauthorized: false };
+        }
+        redis = new Redis(redisUrl, redisOpts);
+        redis.on("error", (err: any) => {
+          console.error("[Redis] Background error:", err.message);
+          // Don't crash the server on redis connection failure
+        });
+        await redis.connect().catch((e: any) => console.log("[Redis] Initial connect failed, will retry: ", e.message));
+        console.log("[Redis] Initialized (or pending lazy connection)");
+      } catch (e) {
+        console.error("[Redis] Fatal init error:", e);
+      }
+    }
+
+    // Firebase Init
+    try {
+      const configPaths = [
+        path.join(process.cwd(), "firebase-applet-config.json"),
+        path.join(__dirname, "firebase-applet-config.json"),
+        "./firebase-applet-config.json"
+      ];
+      let configPath = configPaths.find(p => fs.existsSync(p));
+      
+      if (configPath) {
+        console.log("[Firebase] Loading config from:", configPath);
+        const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+        const firebaseApp = initializeApp(firebaseConfig);
+        db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
+        console.log("[Firebase] Initialized successfully.");
+      } else {
+        console.warn("[Firebase] No config found - using mock/live fallback.");
+      }
+    } catch (e) {
+      console.error("[Firebase] Init failed (non-critical):", e);
+    }
+  })();
+
+  return infraPromise;
 }
 
-// Global promise to track infra readiness
-const infraReady = initInfrastructure();
+// Ensure infra is initialized with a timeout
+async function ensureInfra() {
+  const p = initInfrastructure();
+  try {
+    // We wait up to 2 seconds for infra to initialize. 
+    // If it takes longer, we proceed anyway (likely to results in mock fallbacks)
+    await Promise.race([p, new Promise(r => setTimeout(r, 2000))]);
+  } catch (e) {
+    console.warn("[Infra] Race condition or error during ensureInfra:", e);
+  }
+}
 
 const app = express();
 const PORT = 3000;
@@ -125,30 +161,35 @@ function getAuth(index: number) {
 }
 
 function normalizeProduct(raw: any, sid: string) {
-  const price = parseFloat(raw.Price || raw.CurrentPrice || "0");
+  if (!raw) return null;
+  
+  const price = parseFloat(String(raw.Price || raw.CurrentPrice || "0"));
   const originalPrice = raw.OriginalPrice
-    ? parseFloat(raw.OriginalPrice)
+    ? parseFloat(String(raw.OriginalPrice))
     : null;
 
-  const campaignId = raw.CatalogId || PROGRAM_IDS[0] || "1236776";
-  const actionId = IMPACT_ACTION_ID;
+  const campaignId = String(raw.CatalogId || PROGRAM_IDS[0] || "1236776");
+  const actionId = SIDs.length > 0 ? "15219" : "";
 
-  // Use the tracking URL if provided, otherwise manually construct
-  const destUrl =
+  const destUrl = String(
     raw.TrackingUrl ||
     raw.TrackingLink ||
     raw.ProductUrl ||
     raw.Url ||
-    "https://www.buybestgear.com";
+    "https://www.buybestgear.com"
+  );
 
   let affiliateUrl = destUrl;
   if (
+    sid &&
     !affiliateUrl.includes("/c/") &&
     !affiliateUrl.includes("sjv.io") &&
     !affiliateUrl.includes("impact.com")
   ) {
     affiliateUrl = `https://buybestgear.sjv.io/c/${sid}/${campaignId}?u=${encodeURIComponent(destUrl)}&partnerpropertyid=${IMPACT_PARTNER_PROPERTY_ID}`;
   }
+
+  const desc = String(raw.Description || "");
 
   return {
     id: String(
@@ -157,16 +198,16 @@ function normalizeProduct(raw: any, sid: string) {
     name: String(raw.Name || raw.ProductName || "Premium Gear"),
     category: String(raw.Category || "Discovery"),
     imageUrl: String(raw.ImageUri || raw.ImageLink || raw.ImageUrl || ""),
-    price,
+    price: isNaN(price) ? 0 : price,
     originalPrice:
       originalPrice && originalPrice > price ? originalPrice : null,
     currency: String(raw.Currency || "USD"),
-    rating: raw.Rating ? parseFloat(raw.Rating) : 4.8,
+    rating: raw.Rating ? parseFloat(String(raw.Rating)) : 4.8,
     reviewCount: raw.ReviewCount
-      ? parseInt(raw.ReviewCount)
+      ? parseInt(String(raw.ReviewCount))
       : Math.floor(Math.random() * 2000),
-    specs: raw.Description
-      ? raw.Description.split(".")
+    specs: desc
+      ? desc.split(".")
           .slice(0, 2)
           .map((s: string) => s.trim())
           .filter(Boolean)
@@ -269,11 +310,7 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
   console.log(`[FeedHandler] Request start: page=${page}`);
 
   try {
-    // 1. Give infrastructure a moment to initialize on first request
-    // We don't await indefinitely to avoid timeouts
-    if (page === 0) {
-      await Promise.race([infraReady, new Promise(r => setTimeout(r, 1000))]).catch(() => {});
-    }
+    await ensureInfra();
 
     // 2. Try Firestore
     if (db) {
@@ -306,57 +343,74 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
 
     // 3. Try Impact API
     if (hasImpactCreds) {
+      console.log(`[FeedHandler] Attempting Impact API for page ${page}`);
       try {
         const impactPage = page + 1;
         const partnerRequests = SIDs.map(async (sid, i) => {
           const { header } = getAuth(i);
           try {
+            console.log(`[FeedHandler] Requesting catalogs for SID: ${sid.substring(0, 5)}...`);
             const catRes = await axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/`, {
               headers: { Accept: "application/json", Authorization: header },
-              timeout: 3000,
-            }).catch(() => null);
+              timeout: 8000, // Increased timeout for slow API responses
+            }).catch((err) => {
+              console.error(`[FeedHandler] Catalog API error for ${sid.substring(0, 3)}:`, err.message);
+              return null;
+            });
 
             const cid = catRes?.data?.Catalogs?.[0]?.Id || catRes?.data?.Catalogs?.[0]?.CatalogId;
-            if (!cid) return [];
+            if (!cid) {
+              console.log(`[FeedHandler] No catalogs found for SID: ${sid}`);
+              return [];
+            }
 
+            console.log(`[FeedHandler] Fetching items for CID: ${cid}`);
             const itemsRes = await axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/${cid}/Items`, {
               headers: { Accept: "application/json", Authorization: header },
               params: { PageSize: 10, Page: impactPage },
-              timeout: 4000,
+              timeout: 5000,
             }).catch(async () => {
                return axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/ItemSearch`, {
                 headers: { Accept: "application/json", Authorization: header },
                 params: { CatalogId: cid, PageSize: 10, Page: impactPage, QueryString: "*" },
-                timeout: 4000,
+                timeout: 5000,
               }).catch(() => null);
             });
 
-            const items = itemsRes?.data?.Items || itemsRes?.data?.Products || [];
-            return items.map((p: any) => normalizeProduct(p, sid)).filter((p: any) => p.imageUrl && p.price > 0);
-          } catch (e) { return []; }
-        });
+          const items = itemsRes?.data?.Items || itemsRes?.data?.Products || [];
+          console.log(`[FeedHandler] Found ${items.length} raw items for ${sid}`);
+          return items
+            .map((p: any) => normalizeProduct(p, sid))
+            .filter((p: any) => p && p.imageUrl && p.price > 0);
+        } catch (e) { return []; }
+      });
 
         const results = await Promise.all(partnerRequests);
         const products = results.flat();
         if (products.length > 0) {
-          console.log(`[FeedHandler] Returning ${products.length} from Impact`);
+          console.log(`[FeedHandler] Successfully returning ${products.length} from Impact`);
           return res.json(products);
         }
+        console.warn("[FeedHandler] Impact API returned no valid products");
       } catch (apiError: any) {
-        console.error("[FeedHandler] Impact API error (falling back):", apiError.message);
+        console.error("[FeedHandler] Impact API major error (falling back):", apiError.message);
       }
     }
 
     // 4. Guaranteed Mock Fallback
     console.log(`[FeedHandler] Guaranteed Mock Fallback for page ${page}`);
-    return res.json(generateMockProducts(10, page));
+    return res.status(200).json(generateMockProducts(10, page));
 
   } catch (error: any) {
     console.error("FATAL FEED HANDLER ERROR:", error);
     try {
-      return res.json(generateMockProducts(10, page));
+      return res.status(200).json(generateMockProducts(10, page));
     } catch (finalError) {
-      return res.status(500).json({ error: "Total System Failure", details: error.message });
+      return res.status(500).json({ 
+        error: "Total System Failure", 
+        message: error.message || String(error), 
+        details: error.stack 
+      });
     }
   }
 };
@@ -603,7 +657,7 @@ function generateMockProducts(count: number, page: number): any[] {
       price,
       originalPrice: Math.random() > 0.5 ? price + 100 : null,
       currency: "USD",
-      rating: (Math.random() * 1 + 4).toFixed(1),
+      rating: parseFloat((Math.random() * 1 + 4).toFixed(1)),
       reviewCount: Math.floor(Math.random() * 5000),
       specs: ["Pro Performance", "Sleek Design"],
       affiliateUrl,

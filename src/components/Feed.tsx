@@ -14,21 +14,46 @@ export default function Feed() {
       const url = `/api/feed?page=${pageParam}`;
       console.log("Fetching feed from:", url);
       
-      const res = await fetch(url);
+      let res;
+      let attempts = 0;
+      const maxAttempts = 3;
+      
+      while (attempts < maxAttempts) {
+        attempts++;
+        try {
+          res = await fetch(url);
+          if (res.ok) break;
+          // If 5xx error, maybe retry
+          if (res.status >= 500 && attempts < maxAttempts) {
+            console.warn(`Server error ${res.status}, retrying... attempt ${attempts}`);
+            await new Promise(r => setTimeout(r, 1000 * attempts));
+            continue;
+          }
+          break;
+        } catch (err) {
+          if (attempts >= maxAttempts) throw err;
+          console.warn(`Network error, retrying... attempt ${attempts}`);
+          await new Promise(r => setTimeout(r, 1000 * attempts));
+        }
+      }
+
+      if (!res) throw new Error("Connection failed after multiple attempts.");
+
       if (!res.ok) {
         let errorData;
         try {
           errorData = await res.json();
         } catch (e) {
-          errorData = { message: res.statusText };
+          errorData = { message: res.statusText || "Internal Server Error" };
         }
         throw new Error(`Server ${res.status}: ${errorData.message || res.statusText || 'Internal Server Error (No details)'}`);
       }
       
       const contentType = res.headers.get("content-type");
       if (!contentType || !contentType.includes("application/json")) {
-        console.error("Non-JSON response received:", await res.text().then(t => t.substring(0, 200)));
-        throw new Error("Expected JSON response from server, but received something else. This usually means the API route is missing or pointing to the wrong place.");
+        const text = await res.text();
+        console.error("Non-JSON response received:", text.substring(0, 200));
+        throw new Error(`Expected JSON but received ${contentType}. Check your build or Vercel route configuration.`);
       }
       
       return await res.json();
