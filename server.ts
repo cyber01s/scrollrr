@@ -1,3 +1,4 @@
+import { Buffer } from "buffer";
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -55,10 +56,13 @@ async function initInfrastructure() {
   if (infraPromise) return infraPromise;
   
   infraPromise = (async () => {
-    console.log("[Infra] Starting initialization...");
-    
+    console.log("[Infra] Initialization start...");
     try {
-      const configPath = "firebase-applet-config.json";
+      // Use process.cwd() for reliable root path finding across environments
+      const rootPath = process.cwd();
+      const configPath = path.join(rootPath, "firebase-applet-config.json");
+      
+      console.log(`[Infra] Checking config at: ${configPath}`);
       if (fs.existsSync(configPath)) {
         const configRaw = fs.readFileSync(configPath, "utf-8");
         if (configRaw && configRaw.trim()) {
@@ -66,8 +70,12 @@ async function initInfrastructure() {
           const apps = getApps();
           const firebaseApp = apps.length === 0 ? initializeApp(firebaseConfig) : apps[0];
           db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
-          console.log(`[Firebase] Active. Apps: ${apps.length}`);
+          console.log(`[Firebase] Initialized. Apps count: ${apps.length}`);
+        } else {
+          console.warn("[Firebase] Config file empty.");
         }
+      } else {
+        console.warn("[Firebase] Config file NOT found.");
       }
     } catch (e: any) {
       console.error("[Firebase] Init error:", e.message || e);
@@ -206,36 +214,44 @@ async function syncImpactProducts() {
 
 // Standardize feed error handling
 const feedHandler = async (req: express.Request, res: express.Response) => {
-  await initInfrastructure();
   const page = parseInt(req.query.page as string) || 0;
   const requestId = (req as any).requestId || Math.random().toString(36).substring(7);
   console.log(`[Feed][${requestId}] Request start: page=${page}`);
 
   let isResponseSent = false;
+  const startTime = Date.now();
 
-  // Global safety timeout
+  // Global safety timeout (8s to stay well under Vercel's 10s limit)
   const timeoutId = setTimeout(() => {
     if (!isResponseSent) {
       isResponseSent = true;
-      console.warn(`[Feed][${requestId}] Request timeout (9s). Returning mock data.`);
+      console.warn(`[Feed][${requestId}] TIMEOUT triggered after 8s. Falling back to mock data.`);
       res.json(generateMockProducts(12, page));
     }
-  }, 9000);
+  }, 8000);
 
   try {
+    // 1. Lazy infra init with its own race to prevent blocking
+    await Promise.race([
+      initInfrastructure(),
+      new Promise(resolve => setTimeout(resolve, 3000))
+    ]).catch(e => console.error(`[Feed][${requestId}] Infra error:`, e));
+
     // 2. Try Firestore
     if (db) {
       try {
-        const q = query(collection(db, "products"), orderBy("id"), fsLimit(12 * (page + 1)));
+        console.log(`[Feed][${requestId}] Checking Firestore...`);
+        const q = query(collection(db, "products"), orderBy("id"), fsLimit(48)); // Get more to allow pagination
         const snapshot = await getDocs(q);
-        const products = snapshot.docs.map(doc => doc.data());
+        const allProducts = snapshot.docs.map(doc => doc.data());
+        
         const start = page * 12;
-        const paged = products.slice(start, start + 12);
+        const paged = allProducts.slice(start, start + 12);
         
         if (paged.length > 0 && !isResponseSent) {
           isResponseSent = true;
           clearTimeout(timeoutId);
-          console.log(`[Feed][${requestId}] Success: Firestore (${paged.length} items)`);
+          console.log(`[Feed][${requestId}] Success from Firestore (${paged.length} items, took ${Date.now() - startTime}ms)`);
           return res.json(paged);
         }
       } catch (e: any) {
@@ -301,8 +317,13 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
 
 
 const searchHandler = async (req: express.Request, res: express.Response) => {
-  await initInfrastructure();
+  const requestId = (req as any).requestId || Math.random().toString(36).substring(7);
   try {
+    await Promise.race([
+      initInfrastructure(),
+      new Promise(resolve => setTimeout(resolve, 3000))
+    ]).catch(() => {});
+
     const searchQuery = req.query.q as string;
     if (!searchQuery) return res.json([]);
 
@@ -399,8 +420,12 @@ const searchHandler = async (req: express.Request, res: express.Response) => {
 };
 
 const imageHandler = async (req: express.Request, res: express.Response) => {
-  await initInfrastructure();
   try {
+    await Promise.race([
+      initInfrastructure(),
+      new Promise(resolve => setTimeout(resolve, 3000))
+    ]).catch(() => {});
+
     const imageUrl = req.query.url as string;
     if (!imageUrl) return res.status(400).send("URL required");
 
@@ -470,7 +495,8 @@ const statusHandler = async (req: express.Request, res: express.Response) => {
 
 app.get("/api/health", healthHandler);
 app.get("/api/status", statusHandler);
-app.get("/health", healthHandler); // Fallback for some routers
+app.get("/api/ping", (req, res) => res.send("pong"));
+app.get("/health", healthHandler); 
 
 app.get("/api/feed", feedHandler);
 app.get("/feed", feedHandler); // Robustness for Vercel path stripping
