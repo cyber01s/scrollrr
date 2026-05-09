@@ -16,7 +16,13 @@ export default function Feed() {
       
       const res = await fetch(url);
       if (!res.ok) {
-        throw new Error(`Server returned ${res.status}: ${res.statusText} for ${url}`);
+        let errorData;
+        try {
+          errorData = await res.json();
+        } catch (e) {
+          errorData = { message: res.statusText };
+        }
+        throw new Error(`Server ${res.status}: ${errorData.message || res.statusText}`);
       }
       
       const contentType = res.headers.get("content-type");

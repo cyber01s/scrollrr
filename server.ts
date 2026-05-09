@@ -2,9 +2,7 @@ import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import axios from "axios";
-import sharp from "sharp";
 import dotenv from "dotenv";
-import Redis from "ioredis";
 import { initializeApp } from "firebase/app";
 import {
   getFirestore,
@@ -27,41 +25,47 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Infrastructure Clients
-let rawRedisUrl = process.env.REDIS_URL || "";
-// Extract URL if the user accidentally pasted the entire redis-cli command
-let parsedRedisUrl =
-  rawRedisUrl.match(/redis(?:s)?:\/\/[^\s]+/)?.[0] || rawRedisUrl;
-
-const redisOpts: any = {
-  maxRetriesPerRequest: 3,
-};
-
-// Upstash and --tls require TLS configuration
-if (
-  parsedRedisUrl &&
-  (parsedRedisUrl.includes("upstash.io") ||
-    rawRedisUrl.includes("--tls") ||
-    parsedRedisUrl.startsWith("rediss://"))
-) {
-  redisOpts.tls = { rejectUnauthorized: false };
-}
-
-const redis = parsedRedisUrl ? new Redis(parsedRedisUrl, redisOpts) : null;
-const firebaseConfigPath = path.join(process.cwd(), "firebase-applet-config.json");
+let redis: any = null;
 let db: any = null;
+async function initInfrastructure() {
+  const rawRedisUrl = process.env.REDIS_URL || "";
+  const parsedRedisUrl = rawRedisUrl.match(/redis(?:s)?:\/\/[^\s]+/)?.[0] || rawRedisUrl;
 
-try {
-  if (fs.existsSync(firebaseConfigPath)) {
-    const firebaseConfig = JSON.parse(
-      fs.readFileSync(firebaseConfigPath, "utf-8")
-    );
-    const firebaseApp = initializeApp(firebaseConfig);
-    db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
-    console.log("Firebase Firestore initialized successfully.");
+  if (parsedRedisUrl) {
+    try {
+      const { default: Redis } = await import("ioredis");
+      const redisOpts: any = { maxRetriesPerRequest: 3 };
+      if (parsedRedisUrl.includes("upstash.io") || parsedRedisUrl.startsWith("rediss://")) {
+        redisOpts.tls = { rejectUnauthorized: false };
+      }
+      redis = new Redis(parsedRedisUrl, redisOpts);
+      redis.on("error", (err: any) => console.error("Redis error:", err));
+    } catch (e) {
+      console.error("Redis init failed:", e);
+    }
   }
-} catch (err) {
-  console.error("Firebase init failed:", err);
+
+  // Firebase Init
+  try {
+    const configPaths = [
+      path.join(process.cwd(), "firebase-applet-config.json"),
+      path.join(__dirname, "firebase-applet-config.json")
+    ];
+    let configPath = configPaths.find(p => fs.existsSync(p));
+    
+    if (configPath) {
+      const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+      const firebaseApp = initializeApp(firebaseConfig);
+      db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
+      console.log("Firebase initialized from:", configPath);
+    } else {
+      console.warn("No firebase-applet-config.json found");
+    }
+  } catch (e) {
+    console.error("Firebase init failed:", e);
+  }
 }
+initInfrastructure();
 
 const app = express();
 const PORT = 3000;
@@ -380,11 +384,25 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
 
     console.log("Returning Mock Data...");
     const mock = generateMockProducts(10, parseInt(req.query.page as string) || 0);
-    return res.json(mock);
+    return res.status(200).json(mock);
   } catch (error: any) {
-    console.error("Feed API Error:", error);
-    console.log("Returning Mock Data on Feed API Error:", error.message);
-    return res.json(generateMockProducts(10, parseInt(req.query.page as string) || 0));
+    console.error("Feed API Error Detail:", {
+      message: error.message,
+      stack: error.stack,
+      db: !!db,
+      hasImpactCreds
+    });
+    
+    // In production catch, we still try to return something useful to avoid a raw 500
+    try {
+      const page = parseInt(req.query.page as string) || 0;
+      return res.status(200).json(generateMockProducts(10, page));
+    } catch (e) {
+      return res.status(500).json({ 
+        error: "Critical Feed Error", 
+        message: error.message 
+      });
+    }
   }
 };
 
@@ -494,6 +512,7 @@ const imageHandler = async (req: express.Request, res: express.Response) => {
     });
     const buffer = Buffer.from(response.data, "binary");
 
+    const { default: sharp } = await import("sharp");
     const image = sharp(buffer);
     const metadata = await image.metadata();
     const stats = await image.stats();
@@ -540,6 +559,16 @@ app.get("/api/feed", feedHandler);
 app.get("/api/search", searchHandler);
 app.get("/api/image", imageHandler);
 app.post("/api/track", trackHandler);
+
+// Global Error Handler
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error("GLOBAL SERVER ERROR:", err);
+  res.status(500).json({
+    error: "Internal Server Error",
+    message: err.message,
+    path: req.path
+  });
+});
 
 // Force JSON for all /api routes and provide a 404 if not matched
 app.all("/api/*", (req, res) => {
