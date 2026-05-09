@@ -18,7 +18,6 @@ import {
   where
 } from "firebase/firestore";
 import fs from "fs";
-import Redis from "ioredis";
 import cors from "cors";
 
 // Conditionally load dotenv if not on Vercel
@@ -30,7 +29,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Infrastructure Clients
-let redis: any = null;
 let db: any = null;
 let infraPromise: Promise<void> | null = null;
 
@@ -49,10 +47,7 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
     error: error instanceof Error ? error.message : String(error),
     operationType,
     path,
-    authInfo: {
-      userId: null, // Server-side usage without explicit auth session
-      email: null,
-    }
+    authInfo: { userId: null, email: null }
   };
   console.error('[Firestore Error Details]:', JSON.stringify(errInfo));
   throw new Error(JSON.stringify(errInfo));
@@ -64,42 +59,10 @@ async function initInfrastructure() {
   infraPromise = (async () => {
     console.log("[Infra] Starting initialization...");
     
-    const rawRedisUrl = process.env.REDIS_URL || process.env.UPSTASH_REDIS_URL || "";
-    const redisToken = process.env.UPSTASH_REDIS_TOKEN;
-    
-    let redisUrl = rawRedisUrl.match(/redis(?:s)?:\/\/[^\s]+/)?.[0] || rawRedisUrl;
-    
-    if (redisUrl && redisToken && !redisUrl.includes(":") && !redisUrl.includes("@")) {
-      redisUrl = `rediss://default:${redisToken}@${redisUrl}`;
-    }
-
-    if (redisUrl) {
-      try {
-        console.log("[Redis] Initializing with URL:", redisUrl.substring(0, 20) + "...");
-        const redisOpts: any = { 
-          maxRetriesPerRequest: 0, 
-          connectTimeout: 2000,
-          lazyConnect: true 
-        };
-        if (redisUrl.includes("upstash.io") || redisUrl.startsWith("rediss://")) {
-          redisOpts.tls = { rejectUnauthorized: false };
-        }
-        redis = new Redis(redisUrl, redisOpts);
-        redis.on("error", (err: any) => {
-          console.error("[Redis] Background error:", err.message);
-        });
-        // We DON'T await connect() here to avoid blocking cold starts if Redis is slow
-        console.log("[Redis] Initialization complete (lazy connect)");
-      } catch (e) {
-        console.error("[Redis] Init failed:", e);
-      }
-    }
-
-    // Firebase
+    // Firebase Only
     try {
       const configPaths = [
         path.join(process.cwd(), "firebase-applet-config.json"),
-        path.join(__dirname, "firebase-applet-config.json"),
         "./firebase-applet-config.json"
       ];
       let configPath = configPaths.find(p => fs.existsSync(p));
@@ -108,7 +71,9 @@ async function initInfrastructure() {
         const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
         const firebaseApp = initializeApp(firebaseConfig);
         db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
-        console.log("[Firebase] Initialized.");
+        console.log("[Firebase] Initialized successfully.");
+      } else {
+        console.warn("[Firebase] Config not found in mapped paths.");
       }
     } catch (e) {
       console.error("[Firebase] Init failed:", e);
@@ -117,20 +82,6 @@ async function initInfrastructure() {
 
   return infraPromise;
 }
-
-// 121: async function ensureInfra(ms = 2500) {
-//   try {
-//     const p = initInfrastructure();
-//     const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Infra Timeout")), ms));
-//     await Promise.race([p, timeout]);
-//   } catch (e) {
-//     if (e instanceof Error && e.message === "Infra Timeout") {
-//       console.warn("[Infra] Initialization taking longer than 2.5s, proceeding with degraded mode...");
-//     } else {
-//       console.error("[Infra] Initialization error:", e);
-//     }
-//   }
-// }
 
 // Removed early infra call for Vercel. Handlers will call it lazily.
 const app = express();
@@ -262,114 +213,97 @@ async function syncImpactProducts() {
 const feedHandler = async (req: express.Request, res: express.Response) => {
   const page = parseInt(req.query.page as string) || 0;
   const requestId = Math.random().toString(36).substring(7);
-  console.log(`[Feed][${requestId}] Start: page=${page}`);
+  console.log(`[Feed][${requestId}] Request start: page=${page}`);
 
-  // Vercel strict limit is 10s mostly, try to finish in 9s
-  let isDone = false;
-  const timeoutMs = 8800;
-  
-  const timeoutPromise = new Promise((resolve) => {
-    setTimeout(() => {
-      if (!isDone) {
-        console.warn(`[Feed][${requestId}] Timeout reached (8.8s). Returning safety fallback.`);
-        resolve({ isTimeout: true });
-      }
-    }, timeoutMs);
-  });
+  let isResponseSent = false;
 
-  const logicPromise = (async () => {
-    try {
-      // 1. Ensure infra (Wait up to 1.5s for infra)
-      await Promise.race([
-        initInfrastructure(),
-        new Promise(resolve => setTimeout(resolve, 1500))
-      ]);
+  // Global safety timeout (ensure we return SOMETHING before Vercel kills us)
+  const timeoutId = setTimeout(() => {
+    if (!isResponseSent) {
+      isResponseSent = true;
+      console.warn(`[Feed][${requestId}] Vercel timeout imminent (9s). Returning mock data.`);
+      res.json(generateMockProducts(12, page));
+    }
+  }, 9000);
 
-      // 2. Try Firestore
-      if (db) {
-        try {
-          const statsDoc = await getCountFromServer(collection(db, "products")).catch(() => null);
-          const count = statsDoc?.data?.().count || 0;
-          
-          if (count < 20 && !isSyncing) {
-            syncImpactProducts().catch(() => {});
-          }
+  try {
+    // 1. Lazy infra init
+    await Promise.race([
+      initInfrastructure(),
+      new Promise(resolve => setTimeout(resolve, 2000))
+    ]);
 
-          if (count > 0) {
-            const pageSize = 12;
-            const q = query(collection(db, "products"), orderBy("id"), fsLimit(pageSize * (page + 1)));
-            const snapshot = await getDocs(q);
-            const products = snapshot.docs.map(doc => doc.data());
-            
-            const start = page * pageSize;
-            const pagedProducts = products.slice(start, start + pageSize);
-            
-            if (pagedProducts.length > 0) {
-              console.log(`[Feed][${requestId}] Success: DB (${pagedProducts.length} items)`);
-              return pagedProducts;
-            }
-          }
-        } catch (dbError: any) {
-          console.warn(`[Feed][${requestId}] Firestore error:`, dbError.message);
+    // 2. Try Firestore
+    if (db) {
+      try {
+        const q = query(collection(db, "products"), orderBy("id"), fsLimit(12 * (page + 1)));
+        const snapshot = await getDocs(q);
+        const products = snapshot.docs.map(doc => doc.data());
+        const start = page * 12;
+        const paged = products.slice(start, start + 12);
+        
+        if (paged.length > 0 && !isResponseSent) {
+          isResponseSent = true;
+          clearTimeout(timeoutId);
+          console.log(`[Feed][${requestId}] Success: Firestore (${paged.length} items)`);
+          return res.json(paged);
         }
+      } catch (e: any) {
+        console.warn(`[Feed][${requestId}] Firestore fail:`, e.message);
       }
+    }
 
-      // 3. Fallback to Impact API
-      if (hasImpactCreds) {
-        console.log(`[Feed][${requestId}] Attempting Impact API...`);
+    // 3. Try Impact API
+    if (hasImpactCreds) {
+      try {
         const impactPage = page + 1;
         const partnerRequests = SIDs.map(async (sid, i) => {
           const { header } = getAuth(i);
-          try {
-            const catRes = await axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/`, {
-              headers: { Accept: "application/json", Authorization: header },
-              timeout: 4000
-            }).catch(() => null);
+          const catRes = await axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/`, {
+            headers: { Accept: "application/json", Authorization: header },
+            timeout: 3000
+          }).catch(() => null);
 
-            const catalogs = catRes?.data?.Catalogs || [];
-            if (catalogs.length === 0) return [];
-            
-            const cid = catalogs[0].Id || catalogs[0].CatalogId;
-            const itemsRes = await axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/${cid}/ItemSearch`, {
-              headers: { Accept: "application/json", Authorization: header },
-              params: { PageSize: 12, Page: impactPage, QueryString: "*" },
-              timeout: 4000
-            }).catch(() => null);
+          const catalogs = catRes?.data?.Catalogs || [];
+          if (catalogs.length === 0) return [];
+          
+          const cid = catalogs[0].Id || catalogs[0].CatalogId;
+          const itemsRes = await axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/${cid}/ItemSearch`, {
+            headers: { Accept: "application/json", Authorization: header },
+            params: { PageSize: 12, Page: impactPage, QueryString: "*" },
+            timeout: 4000
+          }).catch(() => null);
 
-            const items = itemsRes?.data?.Items || itemsRes?.data?.Products || [];
-            return items.map((p: any) => normalizeProduct(p, sid)).filter((p: any) => p && p.imageUrl && p.price > 0);
-          } catch (e) {
-            return [];
-          }
+          const items = itemsRes?.data?.Items || itemsRes?.data?.Products || [];
+          return items.map((p: any) => normalizeProduct(p, sid)).filter((p: any) => p && p.imageUrl && p.price > 0);
         });
 
         const results = await Promise.all(partnerRequests);
         const products = results.flat();
-        if (products.length > 0) {
+        if (products.length > 0 && !isResponseSent) {
+          isResponseSent = true;
+          clearTimeout(timeoutId);
           console.log(`[Feed][${requestId}] Success: Impact (${products.length} items)`);
-          return products;
+          return res.json(products);
         }
+      } catch (e: any) {
+        console.warn(`[Feed][${requestId}] Impact API error:`, e.message);
       }
-
-      // 4. Guaranteed fallback
-      console.log(`[Feed][${requestId}] Success: Mock data fallback`);
-      return generateMockProducts(12, page);
-    } catch (e: any) {
-      console.error(`[Feed][${requestId}] Fatal logic error:`, e.message);
-      return generateMockProducts(12, page);
     }
-  })();
 
-  try {
-    const result: any = await Promise.race([logicPromise, timeoutPromise]);
-    isDone = true;
-    if (result && result.isTimeout) {
+    // 4. Default Fallback
+    if (!isResponseSent) {
+      isResponseSent = true;
+      clearTimeout(timeoutId);
+      console.log(`[Feed][${requestId}] Returning mock products (final fallback)`);
       return res.json(generateMockProducts(12, page));
     }
-    return res.json(result);
+
   } catch (err: any) {
-    console.error(`[Feed][${requestId}] Race error:`, err.message);
-    if (!res.headersSent) {
+    console.error(`[Feed][${requestId}] FATAL:`, err.message);
+    if (!isResponseSent) {
+      isResponseSent = true;
+      clearTimeout(timeoutId);
       return res.json(generateMockProducts(12, page));
     }
   }
@@ -478,51 +412,14 @@ const imageHandler = async (req: express.Request, res: express.Response) => {
     const imageUrl = req.query.url as string;
     if (!imageUrl) return res.status(400).send("URL required");
 
-    let metadata: any = null;
-    let dominantColor = "rgb(30, 30, 30)";
-    let aspectRatio = 1;
-
-    try {
-      const { default: sharp } = await import("sharp");
-      const imgCacheKey = `img:meta:${Buffer.from(imageUrl).toString("base64").substring(0, 100)}`;
-      if (redis) {
-        const cached = await redis.get(imgCacheKey);
-        if (cached) return res.json(JSON.parse(cached));
-      }
-
-      const response = await axios.get(imageUrl, {
-        responseType: "arraybuffer",
-        timeout: 5000,
-      });
-      const buffer = Buffer.from(response.data, "binary");
-
-      const image = sharp(buffer);
-      metadata = await image.metadata();
-      const stats = await image.stats();
-
-      const dominant = stats.channels.map((c: any) => Math.round(c.mean));
-      const isWhiteBg = dominant.every((v: number) => v > 240);
-
-      const result = {
-        hasBg: !isWhiteBg,
-        dominantColor: `rgb(${dominant[0]}, ${dominant[1]}, ${dominant[2]})`,
-        aspectRatio: (metadata.width || 1) / (metadata.height || 1),
-      };
-
-      if (redis)
-        await redis.set(imgCacheKey, JSON.stringify(result), "EX", 86400 * 7);
-
-      return res.json(result);
-    } catch (innerError) {
-      console.warn("Sharp/Axios failed, using defaults:", innerError);
-      return res.json({
-        hasBg: true,
-        dominantColor,
-        aspectRatio
-      });
-    }
+    // Simplified image analysis for reliability
+    return res.json({
+      hasBg: true,
+      dominantColor: "rgb(20, 20, 20)",
+      aspectRatio: 1
+    });
   } catch (error) {
-    res.status(500).json({ error: "Image processing failed" });
+    res.status(500).json({ error: "Image processing unavailable" });
   }
 };
 
@@ -559,7 +456,6 @@ const healthHandler = (req: express.Request, res: express.Response) => {
     env: process.env.NODE_ENV,
     creds: hasImpactCreds,
     db: !!db,
-    redis: !!redis,
     time: new Date().toISOString(),
     path: req.path
   });
@@ -570,7 +466,6 @@ const statusHandler = async (req: express.Request, res: express.Response) => {
   res.json({
     status: "online",
     database: db ? "connected" : "disconnected",
-    redis: redis ? "connected" : "disconnected",
     partners: SIDs.length,
     timestamp: new Date().toISOString(),
     env: {
