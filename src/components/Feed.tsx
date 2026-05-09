@@ -1,10 +1,11 @@
 import React, { useEffect, useRef, useCallback } from 'react';
-import { useInfiniteQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import ProductCard from './ProductCard';
 import { useFeedStore } from '../store/feed';
 import { Product } from '../types/product';
 
 export default function Feed() {
+  const queryClient = useQueryClient();
   const { currentIndex, setCurrentIndex, isSearchMode, searchResults } = useFeedStore();
   const observerTarget = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -92,7 +93,8 @@ export default function Feed() {
     const allProducts = data?.pages.flat() || [];
     const totalCards = isSearchMode ? searchResults.length : allProducts.length;
     
-    if (!isSearchMode && totalCards > 0 && index >= totalCards - 2 && !isFetchingNextPage && hasNextPage) {
+    if (!isSearchMode && totalCards > 0 && index >= totalCards - 1 && !isFetchingNextPage && hasNextPage) {
+      console.log(`[Feed] Triggering fetchNextPage. Index: ${index}, Total: ${totalCards}`);
       fetchNextPage();
     }
   }, [data?.pages, isFetchingNextPage, hasNextPage, fetchNextPage, setCurrentIndex, currentIndex, isSearchMode, searchResults.length]);
@@ -100,19 +102,32 @@ export default function Feed() {
   useEffect(() => {
     const container = containerRef.current;
     if (container) {
-      container.addEventListener('scroll', handleScroll, { passive: true });
-      return () => container.removeEventListener('scroll', handleScroll);
+      const throttledHandleScroll = () => {
+        if (window.requestAnimationFrame) {
+          window.requestAnimationFrame(handleScroll);
+        } else {
+          handleScroll();
+        }
+      };
+      container.addEventListener('scroll', throttledHandleScroll, { passive: true });
+      return () => container.removeEventListener('scroll', throttledHandleScroll);
     }
   }, [handleScroll]);
 
-  const displayCards = (isSearchMode && searchResults.length > 0) ? searchResults : (data?.pages.flat() || []);
+  const allProducts = data?.pages.flat() || [];
+  const displayCards = (isSearchMode && searchResults.length > 0) ? searchResults : allProducts;
 
   if (isError) {
     return (
       <div className="flex flex-col items-center justify-center h-[100dvh] w-full bg-black text-center p-8 gap-4">
-        <div className="text-white text-xl">Error loading feed</div>
-        <div className="text-red-400 text-sm">{error instanceof Error ? error.message : "Unknown error"}</div>
-        <button onClick={() => window.location.reload()} className="px-4 py-2 mt-4 bg-white/10 rounded-full text-white">Retry</button>
+        <div className="text-white text-xl">Connection to Scrollr interrupted</div>
+        <div className="text-white/40 text-sm max-w-xs">{error instanceof Error ? error.message : "The product feed is temporarily unavailable."}</div>
+        <button 
+          onClick={() => queryClient.resetQueries({ queryKey: ['feed'] })} 
+          className="px-6 py-3 mt-4 bg-white/10 rounded-full text-white text-sm font-medium hover:bg-white/20 transition-colors"
+        >
+          Try Again
+        </button>
       </div>
     );
   }

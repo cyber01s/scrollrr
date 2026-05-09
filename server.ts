@@ -14,11 +14,15 @@ import {
   orderBy,
   limit as fsLimit,
   getCountFromServer,
+  addDoc,
+  where
 } from "firebase/firestore";
 import fs from "fs";
+import Redis from "ioredis";
+import cors from "cors";
 
 // Conditionally load dotenv if not on Vercel
-if (!process.env.VERCEL) {
+if (!process.env.VERCEL && !process.env.VERCEL_URL) {
   dotenv.config();
 }
 
@@ -48,7 +52,6 @@ async function initInfrastructure() {
     if (redisUrl) {
       try {
         console.log("[Redis] Initializing with URL:", redisUrl.substring(0, 20) + "...");
-        const { default: RedisClient } = await import("ioredis");
         const redisOpts: any = { 
           maxRetriesPerRequest: 0, 
           connectTimeout: 2000,
@@ -57,7 +60,7 @@ async function initInfrastructure() {
         if (redisUrl.includes("upstash.io") || redisUrl.startsWith("rediss://")) {
           redisOpts.tls = { rejectUnauthorized: false };
         }
-        redis = new RedisClient(redisUrl, redisOpts);
+        redis = new Redis(redisUrl, redisOpts);
         redis.on("error", (err: any) => {
           console.error("[Redis] Background error:", err.message);
         });
@@ -95,8 +98,8 @@ async function initInfrastructure() {
 async function ensureInfra() {
   const p = initInfrastructure();
   try {
-    const timeout = new Promise(resolve => setTimeout(resolve, 1000));
-    await Promise.race([initInfrastructure(), timeout]);
+    const timeout = new Promise(resolve => setTimeout(resolve, 800)); // Tighten to 800ms
+    await Promise.race([p, timeout]);
   } catch (e) {
     console.warn("[Infra] Timeout or error during ensureInfra:", e);
   }
@@ -111,6 +114,15 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json());
+app.use(cors());
+
+// Debug logging for Vercel
+app.use((req, res, next) => {
+  if (process.env.VERCEL) {
+    console.log(`[Vercel] req.url: ${req.url}, req.path: ${req.path}`);
+  }
+  next();
+});
 
 // Expose app for Vercel
 // Moving to bottom to ensure all routes are registered
@@ -302,20 +314,28 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
   console.log(`[FeedHandler] Request start: page=${page}`);
 
   try {
+    console.log("[FeedHandler] Ensuring infra...");
     await ensureInfra();
 
     // 2. Try Firestore
     if (db) {
+      console.log("[FeedHandler] DB exists, checking count...");
       try {
-        const statsDoc = await getCountFromServer(collection(db, "products")).catch(() => null);
-        const count = statsDoc?.data().count || 0;
+        const statsDoc = await getCountFromServer(collection(db, "products")).catch((e) => {
+          console.error("[FeedHandler] getCountFromServer failed:", e.message);
+          return null;
+        });
+        const count = statsDoc?.data?.().count || 0;
+        console.log(`[FeedHandler] DB reported count: ${count}`);
         
         if (count < 50) {
-          syncImpactProducts().catch(e => console.error("Background sync fail:", e));
+          console.log("[FeedHandler] Low count, triggering background sync...");
+          syncImpactProducts().catch(e => console.error("[FeedHandler] Background sync fail:", e));
         }
 
         if (count > 0) {
           const pageSize = 10;
+          console.log(`[FeedHandler] Fetching page ${page} from Firestore...`);
           const q = query(collection(db, "products"), orderBy("id"), fsLimit(pageSize * (page + 1)));
           const snapshot = await getDocs(q);
           const products = snapshot.docs.map(doc => doc.data());
@@ -324,86 +344,99 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
           const pagedProducts = products.slice(start, start + pageSize);
           
           if (pagedProducts && pagedProducts.length > 0) {
-            console.log(`[FeedHandler] Returning ${pagedProducts.length} from DB`);
+            console.log(`[FeedHandler] SUCCESS: Returning ${pagedProducts.length} from DB`);
             return res.json(pagedProducts);
           }
+          console.log("[FeedHandler] DB page empty, falling through to API...");
         }
       } catch (dbError: any) {
-        console.error("[FeedHandler] Firestore error (falling back):", dbError.message);
+        console.error("[FeedHandler] Firestore error (falling through):", dbError.message);
       }
     }
 
     // 3. Try Impact API
     if (hasImpactCreds) {
-      console.log(`[FeedHandler] Attempting Impact API for page ${page}`);
+      console.log(`[FeedHandler] hasImpactCreds=true, attempting Impact API for page ${page}`);
       try {
         const impactPage = page + 1;
         const partnerRequests = SIDs.map(async (sid, i) => {
           const { header } = getAuth(i);
           try {
-            console.log(`[FeedHandler] Requesting catalogs for SID: ${sid.substring(0, 5)}...`);
+            console.log(`[FeedHandler][SID:${sid.substring(0, 5)}] Requesting Catalogs...`);
             const catRes = await axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/`, {
               headers: { Accept: "application/json", Authorization: header },
-              timeout: 8000, // Increased timeout for slow API responses
+              timeout: 6000,
             }).catch((err) => {
-              console.error(`[FeedHandler] Catalog API error for ${sid.substring(0, 3)}:`, err.message);
+              console.error(`[FeedHandler][SID:${sid.substring(0, 5)}] Catalog API failed:`, err.message);
               return null;
             });
 
-            const cid = catRes?.data?.Catalogs?.[0]?.Id || catRes?.data?.Catalogs?.[0]?.CatalogId;
+            const catalogs = catRes?.data?.Catalogs || [];
+            const cid = catalogs[0]?.Id || catalogs[0]?.CatalogId;
+            
             if (!cid) {
-              console.log(`[FeedHandler] No catalogs found for SID: ${sid}`);
+              console.log(`[FeedHandler][SID:${sid.substring(0, 5)}] No active catalogs found.`);
               return [];
             }
 
-            console.log(`[FeedHandler] Fetching items for CID: ${cid}`);
+            console.log(`[FeedHandler][SID:${sid.substring(0, 5)}] Fetching Items for CID:${cid}...`);
             const itemsRes = await axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/${cid}/Items`, {
               headers: { Accept: "application/json", Authorization: header },
               params: { PageSize: 10, Page: impactPage },
               timeout: 5000,
-            }).catch(async () => {
-               return axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/ItemSearch`, {
+            }).catch(async (e) => {
+               console.warn(`[FeedHandler][SID:${sid.substring(0, 5)}] Items retrieval failed, trying ItemSearch:`, e.message);
+               return axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/${cid}/ItemSearch`, {
                 headers: { Accept: "application/json", Authorization: header },
-                params: { CatalogId: cid, PageSize: 10, Page: impactPage, QueryString: "*" },
+                params: { PageSize: 10, Page: impactPage, QueryString: "*" },
                 timeout: 5000,
-              }).catch(() => null);
+              }).catch((e2) => {
+                console.error(`[FeedHandler][SID:${sid.substring(0, 5)}] ItemSearch also failed:`, e2.message);
+                return null;
+              });
             });
 
-          const items = itemsRes?.data?.Items || itemsRes?.data?.Products || [];
-          console.log(`[FeedHandler] Found ${items.length} raw items for ${sid}`);
-          return items
-            .map((p: any) => normalizeProduct(p, sid))
-            .filter((p: any) => p && p.imageUrl && p.price > 0);
-        } catch (e) { return []; }
-      });
+            const items = itemsRes?.data?.Items || itemsRes?.data?.Products || [];
+            if (items.length > 0) {
+              console.log(`[FeedHandler][SID:${sid.substring(0, 5)}] Found ${items.length} raw items.`);
+              return items
+                .map((p: any) => normalizeProduct(p, sid))
+                .filter((p: any) => p && p.imageUrl && p.price > 0);
+            }
+            return [];
+          } catch (e: any) { 
+            console.error(`[FeedHandler][SID:${sid.substring(0, 3)}] Request cycle failed:`, e.message);
+            return []; 
+          }
+        });
 
         const results = await Promise.all(partnerRequests);
         const products = results.flat();
         if (products.length > 0) {
-          console.log(`[FeedHandler] Successfully returning ${products.length} from Impact`);
+          console.log(`[FeedHandler] SUCCESS: Returning ${products.length} from Impact total`);
           return res.json(products);
         }
-        console.warn("[FeedHandler] Impact API returned no valid products");
+        console.warn("[FeedHandler] Impact API returned 0 valid products combined.");
       } catch (apiError: any) {
-        console.error("[FeedHandler] Impact API major error (falling back):", apiError.message);
+        console.error("[FeedHandler] Impact API major crash:", apiError.message);
       }
     }
 
     // 4. Guaranteed Mock Fallback
-    console.log(`[FeedHandler] Guaranteed Mock Fallback for page ${page}`);
+    console.log(`[FeedHandler] SUCCESS (Fallback): Returning Mock Products for page ${page}`);
     return res.status(200).json(generateMockProducts(10, page));
 
   } catch (error: any) {
-    console.error("FATAL FEED HANDLER ERROR:", error);
+    console.error("[FeedHandler] CRITICAL FATAL ERROR:", error);
     try {
-      return res.status(200).json(generateMockProducts(10, page));
+      if (!res.headersSent) {
+        return res.status(200).json(generateMockProducts(10, page));
+      }
     } catch (finalError: any) {
-      return res.status(500).json({ 
-        error: "Total System Failure", 
-        message: error?.message || String(error),
-        details: error?.stack,
-        finalError: finalError?.message
-      });
+      console.error("[FeedHandler] Recovery failed:", finalError.message);
+      if (!res.headersSent) {
+        return res.status(500).json({ error: "System failure", details: error.message });
+      }
     }
   }
 };
@@ -573,29 +606,34 @@ const trackHandler = async (req: express.Request, res: express.Response) => {
   res.status(202).send();
 };
 
-import { addDoc, where } from "firebase/firestore";
-
-app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
-  next();
-});
-
 // Health check and environment debug
-app.get("/api/health", (req, res) => {
+const healthHandler = (req: express.Request, res: express.Response) => {
   res.json({ 
     status: "ok", 
-    vercel: !!process.env.VERCEL,
+    vercel: !!(process.env.VERCEL || process.env.VERCEL_URL),
+    env: process.env.NODE_ENV,
     creds: hasImpactCreds,
     db: !!db,
     redis: !!redis,
-    time: new Date().toISOString()
+    time: new Date().toISOString(),
+    path: req.path
   });
-});
+};
+
+app.get("/api/health", healthHandler);
+app.get("/health", healthHandler); // Fallback for some routers
 
 app.get("/api/feed", feedHandler);
+app.get("/feed", feedHandler); // Robustness for Vercel path stripping
+
 app.get("/api/search", searchHandler);
+app.get("/search", searchHandler);
+
 app.get("/api/image", imageHandler);
+app.get("/image", imageHandler);
+
 app.post("/api/track", trackHandler);
+app.post("/track", trackHandler);
 
 // Global Error Handler
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
