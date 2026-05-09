@@ -118,20 +118,21 @@ async function initInfrastructure() {
   return infraPromise;
 }
 
-// Ensure infra is initialized with a timeout
-async function ensureInfra(ms = 1500) {
-  const p = initInfrastructure();
-  try {
-    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Infra Timeout")), ms));
-    await Promise.race([p, timeout]);
-  } catch (e) {
-    console.warn("[Infra] Initialization taking longer than expected, moving on...");
-  }
-}
+// 121: async function ensureInfra(ms = 2500) {
+//   try {
+//     const p = initInfrastructure();
+//     const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Infra Timeout")), ms));
+//     await Promise.race([p, timeout]);
+//   } catch (e) {
+//     if (e instanceof Error && e.message === "Infra Timeout") {
+//       console.warn("[Infra] Initialization taking longer than 2.5s, proceeding with degraded mode...");
+//     } else {
+//       console.error("[Infra] Initialization error:", e);
+//     }
+//   }
+// }
 
-// Top-level infra init (non-blocking)
-initInfrastructure().catch(e => console.error("[Server] Early infra init failed:", e.message));
-
+// Removed early infra call for Vercel. Handlers will call it lazily.
 const app = express();
 const PORT = 3000;
 
@@ -257,52 +258,47 @@ async function syncImpactProducts() {
   }
 }
 
-// API Routes
+// Standardize feed error handling
 const feedHandler = async (req: express.Request, res: express.Response) => {
   const page = parseInt(req.query.page as string) || 0;
   const requestId = Math.random().toString(36).substring(7);
   console.log(`[Feed][${requestId}] Start: page=${page}`);
 
-  // Race between logic and global timeout
-  const timeoutMs = 8500; // 8.5s for Vercel
-  let isTimedOut = false;
-
-  const timeoutPromise = new Promise((_, reject) => {
+  // Vercel strict limit is 10s mostly, try to finish in 9s
+  let isDone = false;
+  const timeoutMs = 8800;
+  
+  const timeoutPromise = new Promise((resolve) => {
     setTimeout(() => {
-      isTimedOut = true;
-      reject(new Error("GATEWAY_TIMEOUT"));
+      if (!isDone) {
+        console.warn(`[Feed][${requestId}] Timeout reached (8.8s). Returning safety fallback.`);
+        resolve({ isTimeout: true });
+      }
     }, timeoutMs);
   });
 
   const logicPromise = (async () => {
     try {
-      await ensureInfra(1200);
+      // 1. Ensure infra (Wait up to 1.5s for infra)
+      await Promise.race([
+        initInfrastructure(),
+        new Promise(resolve => setTimeout(resolve, 1500))
+      ]);
 
-      // 1. Try Firestore First
+      // 2. Try Firestore
       if (db) {
         try {
-          const statsDoc = await getCountFromServer(collection(db, "products")).catch((e) => {
-            console.error("[FeedHandler] getCountFromServer failed:", e.message);
-            if (e.message?.includes("permissions")) {
-              handleFirestoreError(e, OperationType.GET, "products");
-            }
-            return null;
-          });
+          const statsDoc = await getCountFromServer(collection(db, "products")).catch(() => null);
           const count = statsDoc?.data?.().count || 0;
           
-          if (count < 20) {
+          if (count < 20 && !isSyncing) {
             syncImpactProducts().catch(() => {});
           }
 
           if (count > 0) {
-            const pageSize = 10;
+            const pageSize = 12;
             const q = query(collection(db, "products"), orderBy("id"), fsLimit(pageSize * (page + 1)));
-            const snapshot = await getDocs(q).catch(e => {
-              if (e.message?.includes("permissions")) {
-                handleFirestoreError(e, OperationType.LIST, "products");
-              }
-              throw e;
-            });
+            const snapshot = await getDocs(q);
             const products = snapshot.docs.map(doc => doc.data());
             
             const start = page * pageSize;
@@ -318,32 +314,27 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
         }
       }
 
-      // 2. Fallback to Impact API
+      // 3. Fallback to Impact API
       if (hasImpactCreds) {
         console.log(`[Feed][${requestId}] Attempting Impact API...`);
         const impactPage = page + 1;
-        
         const partnerRequests = SIDs.map(async (sid, i) => {
           const { header } = getAuth(i);
           try {
             const catRes = await axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/`, {
               headers: { Accept: "application/json", Authorization: header },
-              timeout: 3000,
+              timeout: 4000
             }).catch(() => null);
 
             const catalogs = catRes?.data?.Catalogs || [];
-            const cid = catalogs[0]?.Id || catalogs[0]?.CatalogId;
-            if (!cid) return [];
-
-            const itemsRes = await axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/${cid}/Items`, {
+            if (catalogs.length === 0) return [];
+            
+            const cid = catalogs[0].Id || catalogs[0].CatalogId;
+            const itemsRes = await axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/${cid}/ItemSearch`, {
               headers: { Accept: "application/json", Authorization: header },
-              params: { PageSize: 10, Page: impactPage },
-              timeout: 4000,
-            }).catch(() => axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/${cid}/ItemSearch`, {
-              headers: { Accept: "application/json", Authorization: header },
-              params: { PageSize: 10, Page: impactPage, QueryString: "*" },
-              timeout: 4000,
-            }).catch(() => null));
+              params: { PageSize: 12, Page: impactPage, QueryString: "*" },
+              timeout: 4000
+            }).catch(() => null);
 
             const items = itemsRes?.data?.Items || itemsRes?.data?.Products || [];
             return items.map((p: any) => normalizeProduct(p, sid)).filter((p: any) => p && p.imageUrl && p.price > 0);
@@ -360,28 +351,26 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
         }
       }
 
-      // 3. Last fallback: Mock data
-      console.log(`[Feed][${requestId}] Success: Mock fallback`);
-      return generateMockProducts(10, page);
-
+      // 4. Guaranteed fallback
+      console.log(`[Feed][${requestId}] Success: Mock data fallback`);
+      return generateMockProducts(12, page);
     } catch (e: any) {
-      console.error(`[Feed][${requestId}] Logic error:`, e.name, e.message);
-      throw e;
+      console.error(`[Feed][${requestId}] Fatal logic error:`, e.message);
+      return generateMockProducts(12, page);
     }
   })();
 
   try {
-    const finalProducts = await Promise.race([logicPromise, timeoutPromise]) as any[];
-    return res.json(finalProducts);
-  } catch (err: any) {
-    if (err.message === "GATEWAY_TIMEOUT" || isTimedOut) {
-      console.warn(`[Feed][${requestId}] TIMEOUT hit! Returning mock data for safety.`);
-    } else {
-      console.error(`[Feed][${requestId}] Error:`, err.message);
+    const result: any = await Promise.race([logicPromise, timeoutPromise]);
+    isDone = true;
+    if (result && result.isTimeout) {
+      return res.json(generateMockProducts(12, page));
     }
-    // Always return success with mock data if something goes wrong
+    return res.json(result);
+  } catch (err: any) {
+    console.error(`[Feed][${requestId}] Race error:`, err.message);
     if (!res.headersSent) {
-      return res.json(generateMockProducts(10, page));
+      return res.json(generateMockProducts(12, page));
     }
   }
 };
@@ -576,7 +565,23 @@ const healthHandler = (req: express.Request, res: express.Response) => {
   });
 };
 
+const statusHandler = async (req: express.Request, res: express.Response) => {
+  await initInfrastructure();
+  res.json({
+    status: "online",
+    database: db ? "connected" : "disconnected",
+    redis: redis ? "connected" : "disconnected",
+    partners: SIDs.length,
+    timestamp: new Date().toISOString(),
+    env: {
+      IMPACT_SID: SIDs.length > 0 ? "Set" : "Not Set",
+      IMPACT_TOKEN: TOKENS.length > 0 ? "Set" : "Not Set"
+    }
+  });
+};
+
 app.get("/api/health", healthHandler);
+app.get("/api/status", statusHandler);
 app.get("/health", healthHandler); // Fallback for some routers
 
 app.get("/api/feed", feedHandler);
