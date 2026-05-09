@@ -22,7 +22,7 @@ export default function Feed() {
         } catch (e) {
           errorData = { message: res.statusText };
         }
-        throw new Error(`Server ${res.status}: ${errorData.message || res.statusText}`);
+        throw new Error(`Server ${res.status}: ${errorData.message || res.statusText || 'Internal Server Error (No details)'}`);
       }
       
       const contentType = res.headers.get("content-type");

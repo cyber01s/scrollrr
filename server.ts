@@ -27,7 +27,9 @@ const __dirname = path.dirname(__filename);
 // Infrastructure Clients
 let redis: any = null;
 let db: any = null;
+
 async function initInfrastructure() {
+  console.log("Initializing Infrastructure...");
   const rawRedisUrl = process.env.REDIS_URL || "";
   const parsedRedisUrl = rawRedisUrl.match(/redis(?:s)?:\/\/[^\s]+/)?.[0] || rawRedisUrl;
 
@@ -40,8 +42,9 @@ async function initInfrastructure() {
       }
       redis = new Redis(parsedRedisUrl, redisOpts);
       redis.on("error", (err: any) => console.error("Redis error:", err));
+      console.log("Redis initialized");
     } catch (e) {
-      console.error("Redis init failed:", e);
+      console.error("Redis init failed (non-critical):", e);
     }
   }
 
@@ -49,23 +52,27 @@ async function initInfrastructure() {
   try {
     const configPaths = [
       path.join(process.cwd(), "firebase-applet-config.json"),
-      path.join(__dirname, "firebase-applet-config.json")
+      path.join(__dirname, "firebase-applet-config.json"),
+      "./firebase-applet-config.json"
     ];
     let configPath = configPaths.find(p => fs.existsSync(p));
     
     if (configPath) {
+      console.log("Loading Firebase config from:", configPath);
       const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
       const firebaseApp = initializeApp(firebaseConfig);
       db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
-      console.log("Firebase initialized from:", configPath);
+      console.log("Firebase Firestore initialized successfully.");
     } else {
-      console.warn("No firebase-applet-config.json found");
+      console.warn("No firebase-applet-config.json found - proceeding with live/mock fallback.");
     }
   } catch (e) {
-    console.error("Firebase init failed:", e);
+    console.error("Firebase init failed (non-critical):", e);
   }
 }
-initInfrastructure();
+
+// Global promise to track infra readiness
+const infraReady = initInfrastructure();
 
 const app = express();
 const PORT = 3000;
@@ -258,44 +265,46 @@ async function syncImpactProducts() {
 
 // API Routes
 const feedHandler = async (req: express.Request, res: express.Response) => {
+  const page = parseInt(req.query.page as string) || 0;
+  console.log(`[FeedHandler] Request for page ${page}`);
+
   try {
+    // Ensure infra check is at least attempted before first request
+    await Promise.race([infraReady, new Promise(r => setTimeout(r, 2000))]);
+
     if (db) {
       let count = 0;
       try {
         const snapshot = await getCountFromServer(collection(db, "products"));
         count = snapshot.data().count;
-      } catch (e) {}
+        console.log(`[FeedHandler] Firestore count: ${count}`);
+      } catch (e) {
+        console.warn("[FeedHandler] Firestore count failed, likely permissions or config.");
+      }
 
       if (count < 100 || Math.random() < 0.2) {
-        syncImpactProducts(); // Fire and forget background sync
+        syncImpactProducts().catch(e => console.error("Async sync background fail:", e)); 
       }
 
       if (count > 0) {
-        // Optimized pagination: fetch only what is needed for the requested page
-        const page = parseInt(req.query.page as string) || 0;
         const pageSize = 10;
-        
         const q = query(collection(db, "products"), orderBy("id"), fsLimit(pageSize * (page + 1)));
         const snapshot = await getDocs(q);
         const products = snapshot.docs.map(doc => doc.data());
         
-        // Return only the current page's products
         const start = page * pageSize;
         const pagedProducts = products.slice(start, start + pageSize);
         
         if (pagedProducts.length > 0) {
+          console.log(`[FeedHandler] Returning ${pagedProducts.length} items from Firestore`);
           return res.json(pagedProducts);
         }
-        // If we ran out of DB products, generate mock products to keep feed infinite
-        console.log("Ran out of DB products, generating mock feed for page", page);
-        return res.json(generateMockProducts(10, page));
+        console.log(`[FeedHandler] No more Firestore items for page ${page}, falling through.`);
       }
     }
 
-    // If no DB or DB is empty, fetch live from all partners
     if (hasImpactCreds) {
-      let page = parseInt(req.query.page as string);
-      if (isNaN(page)) page = 0;
+      console.log(`[FeedHandler] Fetching live Impact data for page ${page}`);
       const impactPage = page + 1;
 
       const partnerRequests = SIDs.map(async (rawSid, i) => {
@@ -305,6 +314,7 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
           const catRes = await axios
             .get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/`, {
               headers: { Accept: "application/json", Authorization: header },
+              timeout: 4000,
             })
             .catch((e) => {
               console.error(
@@ -329,6 +339,7 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
                   Authorization: header,
                 },
                 params: { PageSize: 10, Page: impactPage },
+                timeout: 5000,
               },
             )
             .catch((e) => {
@@ -347,6 +358,7 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
                       Page: impactPage,
                       QueryString: "*",
                     },
+                    timeout: 5000,
                   },
                 )
                 .catch((e2) => {
@@ -382,25 +394,21 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
       console.log("No Impact Creds, falling back to mock.");
     }
 
-    console.log("Returning Mock Data...");
-    const mock = generateMockProducts(10, parseInt(req.query.page as string) || 0);
+    // Final fallback to mock data
+    console.log(`[FeedHandler] Fallback to Mock Data for page ${page}`);
+    const mock = generateMockProducts(10, page);
     return res.status(200).json(mock);
   } catch (error: any) {
-    console.error("Feed API Error Detail:", {
-      message: error.message,
-      stack: error.stack,
-      db: !!db,
-      hasImpactCreds
-    });
+    console.error("CRITICAL FEED ERROR:", error);
     
-    // In production catch, we still try to return something useful to avoid a raw 500
+    // Last ditch attempt to avoid 500
     try {
-      const page = parseInt(req.query.page as string) || 0;
       return res.status(200).json(generateMockProducts(10, page));
-    } catch (e) {
+    } catch (e: any) {
+      console.error("TOTAL FAILURE:", e);
       return res.status(500).json({ 
-        error: "Critical Feed Error", 
-        message: error.message 
+        error: "Unrecoverable Feed Error", 
+        message: error.message || String(error)
       });
     }
   }
@@ -436,6 +444,7 @@ const searchHandler = async (req: express.Request, res: express.Response) => {
             `https://api.impact.com/Mediapartners/${sid}/Catalogs/`,
             {
               headers: { Accept: "application/json", Authorization: header },
+              timeout: 4000,
             },
           );
           const catalogs = catResponse.data.Catalogs || [];
@@ -461,6 +470,7 @@ const searchHandler = async (req: express.Request, res: express.Response) => {
                     Page: 1,
                     ...(cid ? { CatalogId: cid } : {}),
                   },
+                  timeout: 5000,
                 },
               )
               .catch(() => null),
@@ -509,6 +519,7 @@ const imageHandler = async (req: express.Request, res: express.Response) => {
 
     const response = await axios.get(imageUrl, {
       responseType: "arraybuffer",
+      timeout: 10000,
     });
     const buffer = Buffer.from(response.data, "binary");
 

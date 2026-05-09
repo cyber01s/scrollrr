@@ -225,7 +225,7 @@ export default function ProductCard({ product, index }: ProductCardProps) {
         </motion.div>
 
         <h1 
-          className="text-[20px] sm:text-[22px] font-medium leading-[1.2] text-white max-w-[75%] mb-3"
+          className="text-[20px] font-medium leading-[1.2] text-white max-w-[75%] mb-3"
           style={{ display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}
         >
           {product.name}
