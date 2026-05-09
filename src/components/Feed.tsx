@@ -1,0 +1,217 @@
+import React, { useEffect, useRef, useCallback } from 'react';
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
+import ProductCard from './ProductCard';
+import { useFeedStore } from '../store/feed';
+import { Product } from '../types/product';
+
+export default function Feed() {
+  const queryClient = useQueryClient();
+  const { currentIndex, setCurrentIndex, isSearchMode, searchResults } = useFeedStore();
+  const observerTarget = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const fetchFeed = async ({ pageParam = 0 }) => {
+    try {
+      const url = `/api/feed?page=${pageParam}`;
+      console.log(`[Feed] Fetching: ${url}`);
+      
+      let res;
+      let attempts = 0;
+      const maxAttempts = 2;
+      
+      while (attempts < maxAttempts) {
+        attempts++;
+        try {
+          // Add a controller to timeout the fetch itself
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+          
+          res = await fetch(url, { signal: controller.signal });
+          clearTimeout(timeoutId);
+
+          if (res.ok) {
+            console.log(`[Feed] Success: ${url}`);
+            break;
+          }
+          
+          if (res.status >= 500 && attempts < maxAttempts) {
+            console.warn(`[Feed] Server error ${res.status}, retrying...`);
+            await new Promise(r => setTimeout(r, 1000));
+            continue;
+          }
+          break;
+        } catch (err: any) {
+          console.error(`[Feed] Fetch error (attempt ${attempts}):`, err.name === 'AbortError' ? 'Timeout' : err.message);
+          if (attempts >= maxAttempts) throw err;
+          await new Promise(r => setTimeout(r, 1000));
+        }
+      }
+
+      if (!res) throw new Error("Connection failed after multiple attempts.");
+
+      if (!res.ok) {
+        let errorData;
+        try {
+          errorData = await res.json();
+        } catch (e) {
+          errorData = { message: res.statusText || "Internal Server Error" };
+        }
+        throw new Error(`Server ${res.status}: ${errorData.message || res.statusText || 'Internal Server Error (No details)'}`);
+      }
+      
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        const text = await res.text();
+        console.error("Non-JSON response received:", text.substring(0, 200));
+        throw new Error(`Expected JSON but received ${contentType}. Check your build or Vercel route configuration.`);
+      }
+      
+      return await res.json();
+    } catch (e) {
+      console.error("Feed fetch failed:", e);
+      throw e;
+    }
+  };
+
+  const {
+    data,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+    isError,
+    error,
+    isLoading
+  } = useInfiniteQuery({
+    queryKey: ['feed'],
+    queryFn: fetchFeed,
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) => 
+      (lastPage && Array.isArray(lastPage) && lastPage.length > 0) ? allPages.length : undefined,
+    retry: 1,
+    staleTime: 5000,
+  });
+
+  // Safety timeout for UI initial load
+  const [isTimedOut, setIsTimedOut] = React.useState(false);
+  useEffect(() => {
+    if (isLoading) {
+      const timer = setTimeout(() => {
+        if (isLoading) {
+          console.warn("[Feed] Initial load timed out after 15s");
+          setIsTimedOut(true);
+        }
+      }, 15000);
+      return () => clearTimeout(timer);
+    } else {
+      setIsTimedOut(false);
+    }
+  }, [isLoading]);
+
+  const handleScroll = useCallback(() => {
+    if (!containerRef.current) return;
+    const scrollY = containerRef.current.scrollTop;
+    const h = window.innerHeight;
+    const index = Math.round(scrollY / h);
+    
+    if (index !== currentIndex) {
+      setCurrentIndex(index);
+    }
+
+    const allProducts = data?.pages.flat() || [];
+    const totalCards = isSearchMode ? searchResults.length : allProducts.length;
+    
+    if (!isSearchMode && totalCards > 0 && index >= totalCards - 1 && !isFetchingNextPage && hasNextPage) {
+      console.log(`[Feed] Triggering fetchNextPage. Index: ${index}, Total: ${totalCards}`);
+      fetchNextPage();
+    }
+  }, [data?.pages, isFetchingNextPage, hasNextPage, fetchNextPage, setCurrentIndex, currentIndex, isSearchMode, searchResults.length]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (container) {
+      const throttledHandleScroll = () => {
+        if (window.requestAnimationFrame) {
+          window.requestAnimationFrame(handleScroll);
+        } else {
+          handleScroll();
+        }
+      };
+      container.addEventListener('scroll', throttledHandleScroll, { passive: true });
+      return () => container.removeEventListener('scroll', throttledHandleScroll);
+    }
+  }, [handleScroll]);
+
+  const allProducts = data?.pages.flat() || [];
+  const displayCards = (isSearchMode && searchResults.length > 0) ? searchResults : allProducts;
+
+  if (isError || isTimedOut) {
+    return (
+      <div className="flex flex-col items-center justify-center h-[100dvh] w-full bg-black text-center p-8 gap-4">
+        <div className="text-white text-xl">Connection to Scrollr interrupted</div>
+        <div className="text-white/40 text-sm max-w-xs">
+          {isTimedOut ? "The connection is taking longer than expected. Please check your network or try again." : (error instanceof Error ? error.message : "The product feed is temporarily unavailable.")}
+        </div>
+        <button 
+          onClick={() => {
+            setIsTimedOut(false);
+            queryClient.resetQueries({ queryKey: ['feed'] });
+          }} 
+          className="px-6 py-3 mt-4 bg-white/10 rounded-full text-white text-sm font-medium hover:bg-white/20 transition-colors"
+        >
+          Try Again
+        </button>
+      </div>
+    );
+  }
+
+  if (isLoading && displayCards.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-[100dvh] w-full bg-black text-center p-8">
+        <div className="text-[14px] opacity-40 animate-pulse">Initializing Scrollr...</div>
+      </div>
+    );
+  }
+
+  return (
+    <div 
+      ref={containerRef}
+      className="snap-container scrollbar-hide no-scrollbar relative w-full h-full"
+    >
+      {displayCards.map((product, index) => (
+        <ProductCard 
+          key={product.id} 
+          product={product} 
+          index={index} 
+        />
+      ))}
+      
+      {/* Scroll Indicator on first slide */}
+      {displayCards.length > 0 && currentIndex === 0 && (
+        <div className="fixed bottom-12 left-1/2 -translate-x-1/2 flex flex-col items-center justify-center pointer-events-none opacity-60 animate-bounce z-50">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.5))' }}>
+             <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </div>
+      )}
+
+      {/* Manual Load More / End of Feed */}
+      {!isSearchMode && (
+        <div className="snap-center h-[100dvh] w-full flex flex-col items-center justify-center bg-black text-white p-6">
+          {hasNextPage ? (
+            <div className="flex flex-col items-center gap-6">
+              <button 
+                onClick={() => fetchNextPage()}
+                disabled={isFetchingNextPage}
+                className="px-8 py-4 bg-[#FF5A25] rounded-full text-sm font-bold tracking-widest uppercase transition-transform hover:scale-105 active:scale-95 disabled:opacity-50"
+              >
+                {isFetchingNextPage ? 'Loading...' : 'Load More'}
+              </button>
+            </div>
+          ) : (
+            <div className="font-serif text-2xl text-white/80">End of current feed</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
