@@ -7,7 +7,6 @@ import { initializeApp } from "firebase/app";
 import {
   getFirestore,
   collection,
-  addDoc,
   doc,
   setDoc,
   getDocs,
@@ -15,11 +14,13 @@ import {
   orderBy,
   limit as fsLimit,
   getCountFromServer,
-  where
 } from "firebase/firestore";
 import fs from "fs";
 
-dotenv.config();
+// Conditionally load dotenv if not on Vercel
+if (!process.env.VERCEL) {
+  dotenv.config();
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -35,44 +36,39 @@ async function initInfrastructure() {
   infraPromise = (async () => {
     console.log("[Infra] Starting initialization...");
     
-    // Support standard REDIS_URL or UPSTASH_REDIS_URL
     const rawRedisUrl = process.env.REDIS_URL || process.env.UPSTASH_REDIS_URL || "";
     const redisToken = process.env.UPSTASH_REDIS_TOKEN;
     
     let redisUrl = rawRedisUrl.match(/redis(?:s)?:\/\/[^\s]+/)?.[0] || rawRedisUrl;
     
-    // If it's an Upstash REST URL accidentally put into the Redis URL field, 
-    // or if we have a token but no password in the URL, try to fix it.
     if (redisUrl && redisToken && !redisUrl.includes(":") && !redisUrl.includes("@")) {
-      // Basic attempt to construct a valid URL if only the host was provided
       redisUrl = `rediss://default:${redisToken}@${redisUrl}`;
     }
 
     if (redisUrl) {
       try {
-        console.log("[Redis] Connecting to provider...");
-        const { default: Redis } = await import("ioredis");
+        console.log("[Redis] Initializing with URL:", redisUrl.substring(0, 20) + "...");
+        const { default: RedisClient } = await import("ioredis");
         const redisOpts: any = { 
-          maxRetriesPerRequest: 1, 
-          connectTimeout: 3000,
+          maxRetriesPerRequest: 0, 
+          connectTimeout: 2000,
           lazyConnect: true 
         };
         if (redisUrl.includes("upstash.io") || redisUrl.startsWith("rediss://")) {
           redisOpts.tls = { rejectUnauthorized: false };
         }
-        redis = new Redis(redisUrl, redisOpts);
+        redis = new RedisClient(redisUrl, redisOpts);
         redis.on("error", (err: any) => {
           console.error("[Redis] Background error:", err.message);
-          // Don't crash the server on redis connection failure
         });
-        await redis.connect().catch((e: any) => console.log("[Redis] Initial connect failed, will retry: ", e.message));
-        console.log("[Redis] Initialized (or pending lazy connection)");
+        // We DON'T await connect() here to avoid blocking cold starts if Redis is slow
+        console.log("[Redis] Initialization complete (lazy connect)");
       } catch (e) {
-        console.error("[Redis] Fatal init error:", e);
+        console.error("[Redis] Init failed:", e);
       }
     }
 
-    // Firebase Init
+    // Firebase
     try {
       const configPaths = [
         path.join(process.cwd(), "firebase-applet-config.json"),
@@ -82,16 +78,13 @@ async function initInfrastructure() {
       let configPath = configPaths.find(p => fs.existsSync(p));
       
       if (configPath) {
-        console.log("[Firebase] Loading config from:", configPath);
         const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
         const firebaseApp = initializeApp(firebaseConfig);
         db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
-        console.log("[Firebase] Initialized successfully.");
-      } else {
-        console.warn("[Firebase] No config found - using mock/live fallback.");
+        console.log("[Firebase] Initialized.");
       }
     } catch (e) {
-      console.error("[Firebase] Init failed (non-critical):", e);
+      console.error("[Firebase] Init failed:", e);
     }
   })();
 
@@ -102,11 +95,10 @@ async function initInfrastructure() {
 async function ensureInfra() {
   const p = initInfrastructure();
   try {
-    // We wait up to 2 seconds for infra to initialize. 
-    // If it takes longer, we proceed anyway (likely to results in mock fallbacks)
-    await Promise.race([p, new Promise(r => setTimeout(r, 2000))]);
+    const timeout = new Promise(resolve => setTimeout(resolve, 1000));
+    await Promise.race([initInfrastructure(), timeout]);
   } catch (e) {
-    console.warn("[Infra] Race condition or error during ensureInfra:", e);
+    console.warn("[Infra] Timeout or error during ensureInfra:", e);
   }
 }
 
@@ -405,11 +397,12 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
     console.error("FATAL FEED HANDLER ERROR:", error);
     try {
       return res.status(200).json(generateMockProducts(10, page));
-    } catch (finalError) {
+    } catch (finalError: any) {
       return res.status(500).json({ 
         error: "Total System Failure", 
-        message: error.message || String(error), 
-        details: error.stack 
+        message: error?.message || String(error),
+        details: error?.stack,
+        finalError: finalError?.message
       });
     }
   }
@@ -512,36 +505,49 @@ const imageHandler = async (req: express.Request, res: express.Response) => {
     const imageUrl = req.query.url as string;
     if (!imageUrl) return res.status(400).send("URL required");
 
-    const imgCacheKey = `img:meta:${Buffer.from(imageUrl).toString("base64").substring(0, 100)}`;
-    if (redis) {
-      const cached = await redis.get(imgCacheKey);
-      if (cached) return res.json(JSON.parse(cached));
+    let metadata: any = null;
+    let dominantColor = "rgb(30, 30, 30)";
+    let aspectRatio = 1;
+
+    try {
+      const { default: sharp } = await import("sharp");
+      const imgCacheKey = `img:meta:${Buffer.from(imageUrl).toString("base64").substring(0, 100)}`;
+      if (redis) {
+        const cached = await redis.get(imgCacheKey);
+        if (cached) return res.json(JSON.parse(cached));
+      }
+
+      const response = await axios.get(imageUrl, {
+        responseType: "arraybuffer",
+        timeout: 5000,
+      });
+      const buffer = Buffer.from(response.data, "binary");
+
+      const image = sharp(buffer);
+      metadata = await image.metadata();
+      const stats = await image.stats();
+
+      const dominant = stats.channels.map((c: any) => Math.round(c.mean));
+      const isWhiteBg = dominant.every((v: number) => v > 240);
+
+      const result = {
+        hasBg: !isWhiteBg,
+        dominantColor: `rgb(${dominant[0]}, ${dominant[1]}, ${dominant[2]})`,
+        aspectRatio: (metadata.width || 1) / (metadata.height || 1),
+      };
+
+      if (redis)
+        await redis.set(imgCacheKey, JSON.stringify(result), "EX", 86400 * 7);
+
+      return res.json(result);
+    } catch (innerError) {
+      console.warn("Sharp/Axios failed, using defaults:", innerError);
+      return res.json({
+        hasBg: true,
+        dominantColor,
+        aspectRatio
+      });
     }
-
-    const response = await axios.get(imageUrl, {
-      responseType: "arraybuffer",
-      timeout: 10000,
-    });
-    const buffer = Buffer.from(response.data, "binary");
-
-    const { default: sharp } = await import("sharp");
-    const image = sharp(buffer);
-    const metadata = await image.metadata();
-    const stats = await image.stats();
-
-    const dominant = stats.channels.map((c) => Math.round(c.mean));
-    const isWhiteBg = dominant.every((v) => v > 240);
-
-    const result = {
-      hasBg: !isWhiteBg,
-      dominantColor: `rgb(${dominant[0]}, ${dominant[1]}, ${dominant[2]})`,
-      aspectRatio: (metadata.width || 1) / (metadata.height || 1),
-    };
-
-    if (redis)
-      await redis.set(imgCacheKey, JSON.stringify(result), "EX", 86400 * 7);
-
-    res.json(result);
   } catch (error) {
     res.status(500).json({ error: "Image processing failed" });
   }
@@ -566,6 +572,25 @@ const trackHandler = async (req: express.Request, res: express.Response) => {
 
   res.status(202).send();
 };
+
+import { addDoc, where } from "firebase/firestore";
+
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+  next();
+});
+
+// Health check and environment debug
+app.get("/api/health", (req, res) => {
+  res.json({ 
+    status: "ok", 
+    vercel: !!process.env.VERCEL,
+    creds: hasImpactCreds,
+    db: !!db,
+    redis: !!redis,
+    time: new Date().toISOString()
+  });
+});
 
 app.get("/api/feed", feedHandler);
 app.get("/api/search", searchHandler);
