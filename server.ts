@@ -15,9 +15,12 @@ import {
   doc,
   setDoc,
   addDoc
-} from "firebase/firestore";
+} from "firebase/firestore/lite";
 import fs from "fs";
 import cors from "cors";
+import Redis from "ioredis";
+import pg from "pg";
+const { Pool } = pg;
 
 // Conditionally load dotenv if not on Vercel
 if (!process.env.VERCEL && !process.env.VERCEL_URL) {
@@ -27,9 +30,78 @@ if (!process.env.VERCEL && !process.env.VERCEL_URL) {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Redis Client (Upstash) - Using IORedis for standard Redis protocol support
+let redis: Redis | null = null;
+if (process.env.UPSTASH_REDIS_URL || process.env.UPSTASH_REDIS_TOKEN) {
+  try {
+    let redisUrl = process.env.UPSTASH_REDIS_URL || "";
+    
+    // Support separate token if URL is just a host
+    const token = process.env.UPSTASH_REDIS_TOKEN;
+    if (redisUrl && token && !redisUrl.includes(":") && !redisUrl.includes("@")) {
+      redisUrl = `rediss://default:${token}@${redisUrl}:6379`;
+    } else if (!redisUrl && token) {
+      console.warn("[Redis] TOKEN provided but URL missing. Cannot initialize.");
+    }
+
+    // Clean URL if client pasted the full redis-cli command from Upstash UI
+    if (redisUrl.includes("-u redis://")) {
+      redisUrl = redisUrl.split("-u ")[1].trim();
+    }
+    
+    if (redisUrl) {
+      redis = new Redis(redisUrl, {
+        maxRetriesPerRequest: null, // Allow unlimited retries for connection stability
+        connectTimeout: 10000,
+        lazyConnect: true,
+        retryStrategy: (times) => {
+          const delay = Math.min(times * 50, 2000);
+          return delay;
+        }
+      });
+
+      redis.on("error", (err) => {
+        // Shush common "connection closed" errors to keep logs clean during reconnects
+        if (!err.message.includes("Connection is closed") && !err.message.includes("ECONNREFUSED")) {
+          console.warn("[Redis] Connection error:", err.message);
+        }
+      });
+
+      redis.on("connect", () => console.log("[Redis] Connected to Upstash."));
+      console.log("[Redis] Client initialized.");
+    }
+  } catch (err) {
+    console.error("[Redis] Initialization error:", err);
+  }
+}
+
+/**
+ * Helper to safely check if Redis is ready to use
+ */
+const isRedisReady = () => {
+  return redis && (redis.status === "ready" || redis.status === "connecting" || redis.status === "connect");
+};
+
 // Infrastructure Clients
 let db: any = null;
+let pgPool: pg.Pool | null = null;
 let infraPromise: Promise<void> | null = null;
+let isFirestoreQuotaExceeded = false;
+let quotaExceededTime = 0;
+const QUOTA_RETRY_DELAY = 1000 * 60 * 60; // 1 hour circuit breaker (be more aggressive)
+
+/**
+ * Checks if an error is a Firestore quota/exhaustion error
+ */
+function isQuotaError(e: any): boolean {
+  const msg = (e.message || String(e)).toLowerCase();
+  return (
+    msg.includes("quota") || 
+    msg.includes("exhausted") || 
+    msg.includes("limit exceeded") ||
+    (e.code === "resource-exhausted")
+  );
+}
 
 // Firebase Diagnostics
 enum OperationType {
@@ -57,28 +129,66 @@ async function initInfrastructure() {
   
   infraPromise = (async () => {
     console.log("[Infra] Initialization start...");
+    
+    // 1. Initialize Postgres if URL is present (Preferred)
+    if (process.env.DATABASE_URL) {
+      try {
+        console.log("[Postgres] Connecting to DATABASE_URL...");
+        pgPool = new Pool({
+          connectionString: process.env.DATABASE_URL,
+          ssl: { rejectUnauthorized: false }
+        });
+        
+        // Test connection and create table
+        const client = await pgPool.connect();
+        try {
+          await client.query(`
+            CREATE TABLE IF NOT EXISTS products (
+              "id" TEXT PRIMARY KEY,
+              "name" TEXT NOT NULL,
+              "category" TEXT,
+              "imageUrl" TEXT,
+              "price" NUMERIC,
+              "originalPrice" NUMERIC,
+              "currency" TEXT,
+              "rating" NUMERIC,
+              "reviewCount" INTEGER,
+              "specs" TEXT[],
+              "affiliateUrl" TEXT,
+              "campaignId" TEXT,
+              "updatedAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+          `);
+          console.log("[Postgres] Products table ready.");
+        } finally {
+          client.release();
+        }
+      } catch (err: any) {
+        console.error("[Postgres] Init error:", err.message);
+        pgPool = null;
+      }
+    }
+
+    // 2. Initialize Firebase (Secondary/Legacy)
     try {
-      // Use process.cwd() for reliable root path finding across environments
       const rootPath = process.cwd();
       const configPath = path.join(rootPath, "firebase-applet-config.json");
       
-      console.log(`[Infra] Checking config at: ${configPath}`);
       if (fs.existsSync(configPath)) {
         const configRaw = fs.readFileSync(configPath, "utf-8");
         if (configRaw && configRaw.trim()) {
           const firebaseConfig = JSON.parse(configRaw);
           const apps = getApps();
           const firebaseApp = apps.length === 0 ? initializeApp(firebaseConfig) : apps[0];
+          
           db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
-          console.log(`[Firebase] Initialized. Apps count: ${apps.length}`);
-        } else {
-          console.warn("[Firebase] Config file empty.");
+          
+          console.log(`[Firebase] Initialized (Lite). Apps count: ${apps.length}`);
+          syncImpactProducts().catch(e => console.error("[Sync] Background init fail:", e));
         }
-      } else {
-        console.warn("[Firebase] Config file NOT found.");
       }
     } catch (e: any) {
-      console.error("[Firebase] Init error:", e.message || e);
+      console.warn("[Firebase] Init skipped/failed:", e.message);
     }
   })();
 
@@ -162,7 +272,7 @@ function normalizeProduct(raw: any, sid: string) {
 
 let isSyncing = false;
 async function syncImpactProducts() {
-  if (!db || !hasImpactCreds || isSyncing) return;
+  if ((!db && !pgPool) || !hasImpactCreds || isSyncing) return;
   isSyncing = true;
   console.log("[Sync] Triggered background catalog update...");
 
@@ -193,14 +303,57 @@ async function syncImpactProducts() {
         const items = itemsRes.data.Items || itemsRes.data.Products || [];
 
         for (const raw of items) {
+          if (isFirestoreQuotaExceeded && (Date.now() - quotaExceededTime < QUOTA_RETRY_DELAY)) {
+            console.warn("[Sync] Firestore quota exceeded. Stopping background sync.");
+            return;
+          }
+
           const p = normalizeProduct(raw, sid);
           if (!p || !p.imageUrl || p.price === 0) continue;
 
-          await setDoc(doc(db, "products", p.id), p, { merge: true }).catch((err) => {
-            if (err.message?.includes("permissions")) {
-              handleFirestoreError(err, OperationType.WRITE, `products/${p.id}`);
+          // Save to Postgres (Primary)
+          if (pgPool) {
+            try {
+              await pgPool.query(
+                `INSERT INTO products (
+                  "id", "name", "category", "imageUrl", "price", "originalPrice", "currency", "rating", "reviewCount", "specs", "affiliateUrl", "campaignId", "updatedAt"
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+                ON CONFLICT ("id") DO UPDATE SET
+                  "name" = EXCLUDED."name",
+                  "category" = EXCLUDED."category",
+                  "imageUrl" = EXCLUDED."imageUrl",
+                  "price" = EXCLUDED."price",
+                  "originalPrice" = EXCLUDED."originalPrice",
+                  "currency" = EXCLUDED."currency",
+                  "rating" = EXCLUDED."rating",
+                  "reviewCount" = EXCLUDED."reviewCount",
+                  "specs" = EXCLUDED."specs",
+                  "affiliateUrl" = EXCLUDED."affiliateUrl",
+                  "campaignId" = EXCLUDED."campaignId",
+                  "updatedAt" = NOW()`,
+                [
+                  p.id, p.name, p.category, p.imageUrl, p.price, p.originalPrice, 
+                  p.currency, p.rating, p.reviewCount, p.specs, p.affiliateUrl, p.campaignId
+                ]
+              );
+            } catch (pgErr: any) {
+              console.error(`[Sync] Postgres save error for ${p.id}:`, pgErr.message);
             }
-          });
+          }
+
+          // Save to Firestore (Secondary)
+          if (db) {
+            await setDoc(doc(db, "products", p.id), p, { merge: true }).catch((err) => {
+              if (isQuotaError(err)) {
+                isFirestoreQuotaExceeded = true;
+                quotaExceededTime = Date.now();
+                console.error("[CircuitBreaker] Quota exceeded during sync.");
+              }
+              if (err.message?.includes("permissions")) {
+                handleFirestoreError(err, OperationType.WRITE, `products/${p.id}`);
+              }
+            });
+          }
         }
       }
     }
@@ -231,35 +384,119 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
   }, 8000);
 
   try {
-    // 1. Lazy infra init with its own race to prevent blocking
+    // 0. CHECK REDIS FIRST (Reduce hits to Firestore/Impact)
+    if (isRedisReady()) {
+      try {
+        const cacheKey = `feed:v1:page:${page}`;
+        const cachedResultsRaw = await redis!.get(cacheKey);
+        if (cachedResultsRaw) {
+          const cachedResults = JSON.parse(cachedResultsRaw);
+          if (Array.isArray(cachedResults) && cachedResults.length > 0) {
+            isResponseSent = true;
+            clearTimeout(timeoutId);
+            console.log(`[Feed][${requestId}] Success from REDIS (${cachedResults.length} items, took ${Date.now() - startTime}ms)`);
+            return res.json(cachedResults);
+          }
+        }
+      } catch (redisErr: any) {
+        if (!redisErr.message?.includes("closed")) {
+          console.warn(`[Feed][${requestId}] Redis read error:`, redisErr.message);
+        }
+      }
+    }
+
+    // 1. Lazy infra init
     await Promise.race([
       initInfrastructure(),
       new Promise(resolve => setTimeout(resolve, 3000))
     ]).catch(e => console.error(`[Feed][${requestId}] Infra error:`, e));
 
-    // 2. Try Firestore
-    if (db) {
+    // 2. Try Postgres (Primary)
+    if (pgPool) {
+      try {
+        console.log(`[Feed][${requestId}] Checking Postgres...`);
+        const start = page * 12;
+        const resPg = await pgPool.query(`SELECT * FROM products ORDER BY "id" LIMIT 12 OFFSET $1`, [start]);
+        
+        if (resPg.rows.length > 0 && !isResponseSent) {
+          const products = resPg.rows.map(r => ({
+            ...r,
+            price: parseFloat(r.price),
+            originalPrice: r.originalPrice ? parseFloat(r.originalPrice) : null,
+            rating: parseFloat(r.rating)
+          }));
+
+          // Cache the results in Redis
+          if (isRedisReady()) {
+            try {
+              const cacheKey = `feed:v1:page:${page}`;
+              await redis!.set(cacheKey, JSON.stringify(products), "EX", 3600 * 6);
+            } catch (e: any) {}
+          }
+
+          isResponseSent = true;
+          clearTimeout(timeoutId);
+          console.log(`[Feed][${requestId}] Success from Postgres (${products.length} items)`);
+          return res.json(products);
+        }
+      } catch (err: any) {
+        console.warn(`[Feed][${requestId}] Postgres fail:`, err.message);
+      }
+    }
+
+    // 3. Try Firestore (Secondary)
+    const now = Date.now();
+    const canUseFirestore = db && (!isFirestoreQuotaExceeded || (now - quotaExceededTime > QUOTA_RETRY_DELAY));
+
+    if (canUseFirestore) {
       try {
         console.log(`[Feed][${requestId}] Checking Firestore...`);
-        const q = query(collection(db, "products"), orderBy("id"), fsLimit(48)); // Get more to allow pagination
+        const q = query(collection(db, "products"), orderBy("id"), fsLimit(60)); // Get more to allow pagination
         const snapshot = await getDocs(q);
         const allProducts = snapshot.docs.map(doc => doc.data());
         
+        // Reset quota flag if successful
+        if (isFirestoreQuotaExceeded) {
+          isFirestoreQuotaExceeded = false;
+          console.log(`[Feed][${requestId}] Firestore quota seems recovered.`);
+        }
+
         const start = page * 12;
         const paged = allProducts.slice(start, start + 12);
         
         if (paged.length > 0 && !isResponseSent) {
+          // Cache the results in Redis for future requests
+          if (isRedisReady()) {
+            try {
+              const cacheKey = `feed:v1:page:${page}`;
+              // Cache longer if Firestore is failing
+              const ttl = isFirestoreQuotaExceeded ? 3600 * 24 : 3600 * 6;
+              await redis!.set(cacheKey, JSON.stringify(paged), "EX", ttl);
+              console.log(`[Feed][${requestId}] Cached results in REDIS for ${cacheKey} (TTL: ${ttl}s)`);
+            } catch (e: any) {
+              console.warn(`[Feed][${requestId}] Redis write fail:`, e.message);
+            }
+          }
+
           isResponseSent = true;
           clearTimeout(timeoutId);
           console.log(`[Feed][${requestId}] Success from Firestore (${paged.length} items, took ${Date.now() - startTime}ms)`);
           return res.json(paged);
         }
       } catch (e: any) {
-        console.warn(`[Feed][${requestId}] Firestore fail:`, e.message);
+        const errorMsg = e.message || String(e);
+        console.warn(`[Feed][${requestId}] Firestore fail:`, errorMsg);
+        if (isQuotaError(e)) {
+          isFirestoreQuotaExceeded = true;
+          quotaExceededTime = Date.now();
+          console.error(`[CircuitBreaker!!!] Firestore quota exceeded. Silencing for ${QUOTA_RETRY_DELAY / 3600000} hours. Error: ${errorMsg}`);
+        }
       }
+    } else if (isFirestoreQuotaExceeded) {
+      console.log(`[Feed][${requestId}] Skipping Firestore (Circuit breaker active)`);
     }
 
-    // 3. Try Impact API
+    // 4. Try Impact API
     if (hasImpactCreds) {
       try {
         const impactPage = page + 1;
@@ -287,6 +524,16 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
         const results = await Promise.all(partnerRequests);
         const products = results.flat();
         if (products.length > 0 && !isResponseSent) {
+          // Cache the results in Redis
+          if (isRedisReady()) {
+            try {
+              const cacheKey = `feed:v1:page:${page}`;
+              await redis!.set(cacheKey, JSON.stringify(products), "EX", 3600 * 2); // Cache for 2 hours
+            } catch (e: any) {
+              console.warn(`[Feed][${requestId}] Redis write fail:`, e.message);
+            }
+          }
+
           isResponseSent = true;
           clearTimeout(timeoutId);
           console.log(`[Feed][${requestId}] Success: Impact (${products.length} items)`);
@@ -297,7 +544,7 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
       }
     }
 
-    // 4. Default Fallback
+    // 5. Default Fallback
     if (!isResponseSent) {
       isResponseSent = true;
       clearTimeout(timeoutId);
@@ -319,20 +566,86 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
 const searchHandler = async (req: express.Request, res: express.Response) => {
   const requestId = (req as any).requestId || Math.random().toString(36).substring(7);
   try {
+    const searchQuery = req.query.q as string;
+    if (!searchQuery) return res.json([]);
+
+    const startTime = Date.now();
+
+    // 0. CHECK REDIS CACHE FOR THIS SEARCH
+    if (isRedisReady()) {
+      try {
+        const cacheKey = `search:v1:q:${searchQuery.toLowerCase()}`;
+        const cachedResultsRaw = await redis!.get(cacheKey);
+        if (cachedResultsRaw) {
+          const cachedResults = JSON.parse(cachedResultsRaw);
+          if (Array.isArray(cachedResults)) {
+            console.log(`[Search][${requestId}] Success from REDIS (${cachedResults.length} items, took ${Date.now() - startTime}ms)`);
+            return res.json(cachedResults);
+          }
+        }
+      } catch (redisErr: any) {
+        if (!redisErr.message?.includes("closed")) {
+          console.warn(`[Search][${requestId}] Redis read error:`, redisErr.message);
+        }
+      }
+    }
+
     await Promise.race([
       initInfrastructure(),
       new Promise(resolve => setTimeout(resolve, 3000))
     ]).catch(() => {});
 
-    const searchQuery = req.query.q as string;
-    if (!searchQuery) return res.json([]);
-
-    if (db) {
+    // 1. Try Postgres (Primary)
+    if (pgPool) {
       try {
+        console.log(`[Search][${requestId}] Checking Postgres...`);
+        const searchRes = await pgPool.query(
+          `SELECT * FROM products 
+           WHERE ("name" ILIKE $1 OR "category" ILIKE $1 OR EXISTS (
+             SELECT 1 FROM unnest("specs") s WHERE s ILIKE $1
+           )) LIMIT 20`,
+          [`%${searchQuery}%`]
+        );
+
+        if (searchRes.rows.length > 0) {
+          const products = searchRes.rows.map(r => ({
+            ...r,
+            price: parseFloat(r.price),
+            originalPrice: r.originalPrice ? parseFloat(r.originalPrice) : null,
+            rating: parseFloat(r.rating)
+          }));
+
+          if (isRedisReady()) {
+            try {
+              const cacheKey = `search:v1:q:${searchQuery.toLowerCase()}`;
+              await redis!.set(cacheKey, JSON.stringify(products), "EX", 3600);
+            } catch (e: any) {}
+          }
+          console.log(`[Search][${requestId}] Success from Postgres (${products.length} items)`);
+          return res.json(products);
+        }
+      } catch (err: any) {
+        console.warn(`[Search][${requestId}] Postgres fail:`, err.message);
+      }
+    }
+
+    // 2. Try Firestore (Secondary)
+    const now = Date.now();
+    const canUseFirestore = db && (!isFirestoreQuotaExceeded || (now - quotaExceededTime > QUOTA_RETRY_DELAY));
+
+    if (canUseFirestore) {
+      try {
+        console.log(`[Search][${requestId}] Checking Firestore...`);
         const q = query(collection(db, "products"), fsLimit(200));
         const snapshot = await getDocs(q).catch(e => {
-          if (e.message?.includes("permissions")) {
+          const errorMsg = e.message || String(e);
+          if (errorMsg.includes("permissions")) {
             handleFirestoreError(e, OperationType.LIST, "products");
+          }
+          if (isQuotaError(e)) {
+             isFirestoreQuotaExceeded = true;
+             quotaExceededTime = Date.now();
+             console.error(`[CircuitBreaker!!!] Firestore quota exceeded during search. Error: ${errorMsg}`);
           }
           throw e;
         });
@@ -344,12 +657,22 @@ const searchHandler = async (req: express.Request, res: express.Response) => {
         ).slice(0, 20);
 
         if (products.length > 0) {
+          if (isRedisReady()) {
+            try {
+              const cacheKey = `search:v1:q:${searchQuery.toLowerCase()}`;
+              await redis!.set(cacheKey, JSON.stringify(products), "EX", 3600); // Cache for 1 hour
+            } catch (e: any) {
+              console.warn(`[Search][${requestId}] Redis write fail:`, e.message);
+            }
+          }
+          console.log(`[Search][${requestId}] Success from Firestore (${products.length} items, took ${Date.now() - startTime}ms)`);
           return res.json(products);
         }
       } catch (e) {}
     }
 
     if (hasImpactCreds) {
+      console.log(`[Search][${requestId}] Falling back to Impact API...`);
       const partnerRequests = SIDs.map(async (rawSid, index) => {
         const { sid, header } = getAuth(index);
         try {
@@ -405,6 +728,16 @@ const searchHandler = async (req: express.Request, res: express.Response) => {
 
       const results = await Promise.all(partnerRequests);
       const products = results.flat();
+      
+      if (products.length > 0 && isRedisReady()) {
+        try {
+          const cacheKey = `search:v1:q:${searchQuery.toLowerCase()}`;
+          await redis!.set(cacheKey, JSON.stringify(products), "EX", 3600);
+        } catch (e: any) {
+          console.warn(`[Search][${requestId}] Redis write fail:`, e.message);
+        }
+      }
+
       return res.json(products);
     }
 
@@ -550,8 +883,12 @@ async function startServer() {
 }
 
 // Only auto-start if not running as a Vercel serverless function
-if (!process.env.VERCEL) {
-  startServer();
+if (!process.env.VERCEL && !process.env.VERCEL_URL) {
+  console.log(`[Server] Starting in ${process.env.NODE_ENV || 'development'} mode...`);
+  startServer().catch(err => {
+    console.error("[Server] Critical startup error:", err);
+    process.exit(1);
+  });
 }
 
 export default app;
