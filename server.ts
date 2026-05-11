@@ -226,14 +226,12 @@ app.use((req: any, res, next) => {
   req.requestId = Math.random().toString(36).substring(7);
   const timestamp = new Date().toISOString();
   if (req.path !== "/api/health") {
-    console.log(`[${timestamp}][${req.requestId}] incoming Vercel-ish request: ${req.method} origUrl=${req.originalUrl} url=${req.url} path=${req.path}`);
+    console.log(`[${timestamp}][${req.requestId}] incoming: ${req.method} origUrl=${req.originalUrl} url=${req.url} path=${req.path}`);
   }
   
-  // Vercel rewrite compensation! If the URL became /api/index.ts, fix it so Express router works.
-  if (req.url.startsWith("/api/index.ts/")) {
-     req.url = req.url.replace("/api/index.ts", "/api");
-  } else if (req.url === "/api/index.ts") {
-     req.url = "/api/"; 
+  // Vercel rewrite compensation if it overwrites req.url
+  if (req.url.startsWith("/api/index.ts")) {
+     req.url = req.originalUrl || req.url;
   }
   
   next();
@@ -895,8 +893,8 @@ app.post("/track", trackHandler);
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
   console.error("GLOBAL SERVER ERROR:", err);
   res.status(500).json({
-    error: "Internal Server Error",
-    message: err.message,
+    error: "SCROLLR_EXPRESS_ERROR",
+    message: err.message || "Unknown error occurred",
     path: req.path
   });
 });
