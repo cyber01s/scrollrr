@@ -27,8 +27,10 @@ if (!process.env.VERCEL && !process.env.VERCEL_URL) {
   dotenv.config();
 }
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// Ensure Vercel doesn't trip on ESM globals if compiled to CJS
+// const __filename = fileURLToPath(import.meta.url);
+// const __dirname = path.dirname(__filename);
+
 
 // Redis Client (Upstash) - Using IORedis for standard Redis protocol support
 let redis: Redis | null = null;
@@ -198,7 +200,7 @@ async function initInfrastructure() {
     } catch (e: any) {
       console.warn("[Firebase] Init skipped/failed:", e.message);
     }
-  })();
+  })().catch(err => console.error("[Infra] Unhandled top-level error during infra init:", err));
 
   return infraPromise;
 }
@@ -215,8 +217,16 @@ app.use((req: any, res, next) => {
   req.requestId = Math.random().toString(36).substring(7);
   const timestamp = new Date().toISOString();
   if (req.path !== "/api/health") {
-    console.log(`[${timestamp}][${req.requestId}] ${req.method} ${req.url}`);
+    console.log(`[${timestamp}][${req.requestId}] incoming Vercel-ish request: ${req.method} origUrl=${req.originalUrl} url=${req.url} path=${req.path}`);
   }
+  
+  // Vercel rewrite compensation! If the URL became /api/index.ts, fix it so Express router works.
+  if (req.url.startsWith("/api/index.ts/")) {
+     req.url = req.url.replace("/api/index.ts", "/api");
+  } else if (req.url === "/api/index.ts") {
+     req.url = "/api/"; 
+  }
+  
   next();
 });
 
@@ -400,7 +410,7 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
     // 0. CHECK REDIS FIRST (Reduce hits to Firestore/Impact)
     if (isRedisReady()) {
       try {
-        const cacheKey = `feed:v5:page:${page}`;
+        const cacheKey = `feed:v6:page:${page}`;
         const cachedResultsRaw = await redis!.get(cacheKey);
         if (cachedResultsRaw) {
           const cachedResults = JSON.parse(cachedResultsRaw);
@@ -429,7 +439,7 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
       try {
         console.log(`[Feed][${requestId}] Checking Postgres...`);
         const start = page * 12;
-        const resPg = await pgPool.query(`SELECT * FROM products WHERE affiliate_url NOT ILIKE '%/18350?%' AND affiliate_url NOT ILIKE '%/12108?%' ORDER BY "id" LIMIT 12 OFFSET $1`, [start]);
+        const resPg = await pgPool.query(`SELECT * FROM products WHERE "affiliateUrl" NOT ILIKE '%18350%' AND "affiliateUrl" NOT ILIKE '%12108%' ORDER BY "id" LIMIT 12 OFFSET $1`, [start]);
         
         if (resPg.rows.length > 0 && !isResponseSent) {
           const products = resPg.rows.map(r => ({
@@ -450,7 +460,7 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
           // Cache the results in Redis
           if (isRedisReady()) {
             try {
-              const cacheKey = `feed:v5:page:${page}`;
+              const cacheKey = `feed:v6:page:${page}`;
               await redis!.set(cacheKey, JSON.stringify(products), "EX", 3600 * 6);
             } catch (e: any) {}
           }
@@ -489,7 +499,7 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
           // Cache the results in Redis for future requests
           if (isRedisReady()) {
             try {
-              const cacheKey = `feed:v5:page:${page}`;
+              const cacheKey = `feed:v6:page:${page}`;
               // Cache longer if Firestore is failing
               const ttl = isFirestoreQuotaExceeded ? 3600 * 24 : 3600 * 6;
               await redis!.set(cacheKey, JSON.stringify(paged), "EX", ttl);
@@ -548,7 +558,7 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
           // Cache the results in Redis
           if (isRedisReady()) {
             try {
-              const cacheKey = `feed:v5:page:${page}`;
+              const cacheKey = `feed:v6:page:${page}`;
               await redis!.set(cacheKey, JSON.stringify(products), "EX", 3600 * 2); // Cache for 2 hours
             } catch (e: any) {
               console.warn(`[Feed][${requestId}] Redis write fail:`, e.message);
@@ -624,7 +634,7 @@ const searchHandler = async (req: express.Request, res: express.Response) => {
           `SELECT * FROM products 
            WHERE ("name" ILIKE $1 OR "category" ILIKE $1 OR EXISTS (
              SELECT 1 FROM unnest("specs") s WHERE s ILIKE $1
-           )) AND affiliate_url NOT ILIKE '%/18350?%' AND affiliate_url NOT ILIKE '%/12108?%' LIMIT 20`,
+           )) AND "affiliateUrl" NOT ILIKE '%18350%' AND "affiliateUrl" NOT ILIKE '%12108%' LIMIT 20`,
           [`%${searchQuery}%`]
         );
 
@@ -646,7 +656,7 @@ const searchHandler = async (req: express.Request, res: express.Response) => {
 
           if (isRedisReady()) {
             try {
-              const cacheKey = `search:v5:q:${searchQuery.toLowerCase()}`;
+              const cacheKey = `search:v6:q:${searchQuery.toLowerCase()}`;
               await redis!.set(cacheKey, JSON.stringify(products), "EX", 3600);
             } catch (e: any) {}
           }
@@ -688,7 +698,7 @@ const searchHandler = async (req: express.Request, res: express.Response) => {
         if (products.length > 0) {
           if (isRedisReady()) {
             try {
-              const cacheKey = `search:v5:q:${searchQuery.toLowerCase()}`;
+              const cacheKey = `search:v6:q:${searchQuery.toLowerCase()}`;
               await redis!.set(cacheKey, JSON.stringify(products), "EX", 3600); // Cache for 1 hour
             } catch (e: any) {
               console.warn(`[Search][${requestId}] Redis write fail:`, e.message);

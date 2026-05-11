@@ -161,14 +161,17 @@ export default function Feed() {
   useEffect(() => {
     if (!isFetchingNextPage && displayCards.length > prevDbLength) {
       if (prevDbLength > 0 && containerRef.current) {
-        // Find the index of the first new item (which is exactly prevDbLength)
-        // We smooth scroll there so the user sees the first item of the new chunk
-        const targetY = prevDbLength * window.innerHeight;
-        containerRef.current.scrollTo({ top: targetY, behavior: 'smooth' });
+        requestAnimationFrame(() => {
+          if (containerRef.current) {
+            const y = prevDbLength * window.innerHeight;
+            containerRef.current.scrollTo({ top: y, behavior: 'auto' });
+          }
+        });
       }
       setPrevDbLength(displayCards.length);
     }
   }, [displayCards.length, isFetchingNextPage, prevDbLength]);
+
 
   if (isError || isTimedOut) {
     return (
