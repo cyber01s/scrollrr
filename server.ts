@@ -34,9 +34,17 @@ if (!process.env.VERCEL && !process.env.VERCEL_URL) {
 
 // Redis Client (Upstash) - Using IORedis for standard Redis protocol support
 let redis: Redis | null = null;
-if (process.env.UPSTASH_REDIS_URL || process.env.UPSTASH_REDIS_TOKEN) {
+const possibleRedisUrls = [
+  process.env.UPSTASH_REDIS_URL,
+  process.env.REDIS_URL,
+  process.env.KV_URL,
+  ...Object.keys(process.env).filter(k => k.endsWith('_REDIS_URL') || k.endsWith('_KV_URL')).map(k => process.env[k])
+].filter(Boolean);
+
+if (possibleRedisUrls.length > 0 || process.env.UPSTASH_REDIS_TOKEN) {
   try {
-    let redisUrl = process.env.UPSTASH_REDIS_URL || "";
+    let redisUrl = possibleRedisUrls[0] || "";
+
     
     // Support separate token if URL is just a host
     const token = process.env.UPSTASH_REDIS_TOKEN;
@@ -134,11 +142,12 @@ async function initInfrastructure() {
     console.log("[Infra] Initialization start...");
     
     // 1. Initialize Postgres if URL is present (Preferred)
-    if (process.env.DATABASE_URL) {
+    const dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.POSTGRES_PRISMA_URL;
+    if (dbUrl) {
       try {
-        console.log("[Postgres] Connecting to DATABASE_URL...");
+        console.log("[Postgres] Connecting to DB...");
         pgPool = new Pool({
-          connectionString: process.env.DATABASE_URL,
+          connectionString: dbUrl,
           ssl: { rejectUnauthorized: false },
           connectionTimeoutMillis: 5000,
           idleTimeoutMillis: 30000,
@@ -439,7 +448,7 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
       try {
         console.log(`[Feed][${requestId}] Checking Postgres...`);
         const start = page * 12;
-        const resPg = await pgPool.query(`SELECT * FROM products WHERE "affiliateUrl" NOT ILIKE '%18350%' AND "affiliateUrl" NOT ILIKE '%12108%' ORDER BY "id" LIMIT 12 OFFSET $1`, [start]);
+        const resPg = await pgPool.query(`SELECT * FROM products WHERE affiliate_url NOT ILIKE '%18350%' AND affiliate_url NOT ILIKE '%12108%' ORDER BY "id" LIMIT 12 OFFSET $1`, [start]);
         
         if (resPg.rows.length > 0 && !isResponseSent) {
           const products = resPg.rows.map(r => ({
@@ -634,7 +643,7 @@ const searchHandler = async (req: express.Request, res: express.Response) => {
           `SELECT * FROM products 
            WHERE ("name" ILIKE $1 OR "category" ILIKE $1 OR EXISTS (
              SELECT 1 FROM unnest("specs") s WHERE s ILIKE $1
-           )) AND "affiliateUrl" NOT ILIKE '%18350%' AND "affiliateUrl" NOT ILIKE '%12108%' LIMIT 20`,
+           )) AND affiliate_url NOT ILIKE '%18350%' AND affiliate_url NOT ILIKE '%12108%' LIMIT 20`,
           [`%${searchQuery}%`]
         );
 
