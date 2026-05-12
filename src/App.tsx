@@ -26,11 +26,21 @@ export default function App() {
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const fetchProducts = async (pageNum: number) => {
     try {
+      setError(null);
       const res = await fetch(`/api/products?page=${pageNum}&limit=3`);
       const data = await res.json();
+      
+      if (!res.ok) {
+        throw new Error(data.error || `API Error: ${res.status}`);
+      }
+      
+      if (!data.products || data.products.length === 0) {
+        throw new Error(data.message || 'No products found. Please check your Impact.com credentials.');
+      }
       
       if (pageNum === 1) {
         setProducts(data.products || []);
@@ -38,11 +48,12 @@ export default function App() {
         setProducts(prev => [...prev, ...(data.products || [])]);
       }
       
-      setHasMore(data.hasMore);
+      setHasMore(data.hasMore ?? false);
       setLoading(false);
       setLoadingMore(false);
-    } catch (err) {
-      console.error(err);
+    } catch (err: any) {
+      console.error('Error fetching products:', err);
+      setError(err.message || 'Failed to fetch products');
       setLoading(false);
       setLoadingMore(false);
     }
@@ -64,7 +75,25 @@ export default function App() {
   if (loading) {
     return (
       <div className="h-screen w-full bg-black flex items-center justify-center text-white">
-        <div className="animate-pulse">Loading products...</div>
+        {error ? (
+          <div className="flex flex-col items-center justify-center text-center px-6 max-w-md">
+            <div className="mb-4 text-4xl">⚠️</div>
+            <h2 className="text-2xl font-bold mb-2">Configuration Error</h2>
+            <p className="text-gray-400 mb-4">{error}</p>
+            <p className="text-sm text-gray-500">
+              Make sure your Impact.com credentials are set in environment variables:
+              <br />
+              <code className="text-xs bg-black/50 p-1 rounded">IMPACT_ACCOUNT_SID</code>
+              <br />
+              <code className="text-xs bg-black/50 p-1 rounded">IMPACT_AUTH_TOKEN</code>
+            </p>
+          </div>
+        ) : (
+          <div className="animate-pulse text-center">
+            <div className="mb-2">Loading your affiliate products...</div>
+            <div className="text-sm text-gray-500">Fetching from Impact.com</div>
+          </div>
+        )}
       </div>
     );
   }
@@ -137,6 +166,7 @@ function ProductSlide({ product }: { product: Product }) {
   const [showInfo, setShowInfo] = useState(false);
   const [aiDescription, setAiDescription] = useState("");
   const [loadingAi, setLoadingAi] = useState(false);
+  const [imageError, setImageError] = useState(!product.imageUrl);
 
   // Lazy fetching AI description when requested
   const handleShowInfo = async () => {
@@ -160,14 +190,24 @@ function ProductSlide({ product }: { product: Product }) {
     }
   };
 
+  // Verify affiliate link is valid
+  const isValidAffiliateLink = product.affiliateLink && 
+    product.affiliateLink !== '#' && 
+    (product.affiliateLink.startsWith('http://') || product.affiliateLink.startsWith('https://'));
+
   return (
     <div className="relative h-[100dvh] w-full snap-start snap-always bg-black">
-      {/* Image / Video Layer */}
-      <img
-        src={product.imageUrl}
-        alt={product.name}
-        className="absolute inset-0 w-full h-full object-cover opacity-80"
-      />
+      {/* Image / Video Layer with fallback gradient */}
+      <div className="absolute inset-0 w-full h-full bg-gradient-to-br from-blue-900/40 via-purple-900/40 to-black/40">
+        {product.imageUrl && !imageError && (
+          <img
+            src={product.imageUrl}
+            alt={product.name}
+            onError={() => setImageError(true)}
+            className="absolute inset-0 w-full h-full object-cover opacity-80"
+          />
+        )}
+      </div>
       {/* Dark overlay for text readability */}
       <div className="absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-black via-black/50 to-transparent pointer-events-none" />
 
@@ -230,14 +270,22 @@ function ProductSlide({ product }: { product: Product }) {
 
       {/* Bottom CTA (Affiliate Link) */}
       <div className="absolute bottom-6 left-4 right-4 z-20">
-        <a 
-          href={product.affiliateLink}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="w-full bg-white text-black font-bold py-4 px-6 rounded-full flex items-center justify-center space-x-2 shadow-lg scale-100 hover:scale-[1.02] transition-transform"
-        >
-          <span>Shop Now</span>
-          <ArrowRight className="w-5 h-5" />
+        {isValidAffiliateLink ? (
+          <a 
+            href={product.affiliateLink}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="w-full bg-white text-black font-bold py-4 px-6 rounded-full flex items-center justify-center space-x-2 shadow-lg scale-100 hover:scale-[1.02] transition-transform"
+          >
+            <span>Shop Now via Partner</span>
+            <ArrowRight className="w-5 h-5" />
+          </a>
+        ) : (
+          <div className="w-full bg-gray-600 text-white font-bold py-4 px-6 rounded-full flex items-center justify-center space-x-2 shadow-lg opacity-50 cursor-not-allowed">
+            <span>Link Not Available</span>
+          </div>
+        )}
+      </div>
         </a>
       </div>
 
@@ -271,14 +319,20 @@ function ProductSlide({ product }: { product: Product }) {
             </div>
             
             <div className="mt-8">
-               <a 
-                href={product.affiliateLink}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="w-full bg-[#ff5522] text-white font-bold py-3 px-6 rounded-xl flex items-center justify-center space-x-2"
-              >
-                <span>Buy it via our link</span>
-              </a>
+              {isValidAffiliateLink ? (
+                <a 
+                  href={product.affiliateLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full bg-[#ff5522] text-white font-bold py-3 px-6 rounded-xl flex items-center justify-center space-x-2 hover:bg-[#ff6633] transition-colors"
+                >
+                  <span>Buy it via our Partner Link</span>
+                </a>
+              ) : (
+                <div className="w-full bg-gray-600 text-white font-bold py-3 px-6 rounded-xl flex items-center justify-center space-x-2 opacity-50">
+                  <span>Affiliate link not available</span>
+                </div>
+              )}
             </div>
           </motion.div>
         )}
