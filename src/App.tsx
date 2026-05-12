@@ -27,6 +27,7 @@ export default function App() {
   const [hasMore, setHasMore] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [apiSource, setApiSource] = useState<string>('');
 
   const fetchProducts = async (pageNum: number) => {
     try {
@@ -34,18 +35,22 @@ export default function App() {
       const res = await fetch(`/api/products?page=${pageNum}&limit=3`);
       const data = await res.json();
       
-      if (!res.ok) {
-        throw new Error(data.error || `API Error: ${res.status}`);
+      console.log('API Response:', { status: res.status, source: data.source, productCount: data.products?.length });
+
+      if (data.error) {
+        throw new Error(data.error);
       }
       
-      if (!data.products || data.products.length === 0) {
-        throw new Error(data.message || 'No products found. Please check your Impact.com credentials.');
+      if (!data.products) {
+        throw new Error('Invalid API response format');
       }
       
+      setApiSource(data.source || 'unknown');
+
       if (pageNum === 1) {
-        setProducts(data.products || []);
+        setProducts(data.products);
       } else {
-        setProducts(prev => [...prev, ...(data.products || [])]);
+        setProducts(prev => [...prev, ...data.products]);
       }
       
       setHasMore(data.hasMore ?? false);
@@ -81,19 +86,32 @@ export default function App() {
             <h2 className="text-2xl font-bold mb-2">Configuration Error</h2>
             <p className="text-gray-400 mb-4">{error}</p>
             <p className="text-sm text-gray-500">
-              Make sure your Impact.com credentials are set in environment variables:
-              <br />
-              <code className="text-xs bg-black/50 p-1 rounded">IMPACT_ACCOUNT_SID</code>
-              <br />
-              <code className="text-xs bg-black/50 p-1 rounded">IMPACT_AUTH_TOKEN</code>
+              Make sure your Impact.com credentials are set in Vercel environment variables.
             </p>
           </div>
         ) : (
           <div className="animate-pulse text-center">
-            <div className="mb-2">Loading your affiliate products...</div>
-            <div className="text-sm text-gray-500">Fetching from Impact.com</div>
+            <div className="mb-2">🔄 Loading your affiliate products...</div>
+            <div className="text-sm text-gray-500">Fetching from Impact.com or demo data</div>
           </div>
         )}
+      </div>
+    );
+  }
+
+  // Show empty state only if truly no products
+  if (!products || products.length === 0) {
+    return (
+      <div className="h-screen w-full bg-black flex items-center justify-center text-white">
+        <div className="flex flex-col items-center justify-center text-center px-6">
+          <div className="mb-4 text-4xl">📭</div>
+          <h2 className="text-2xl font-bold mb-2">No Products Available</h2>
+          <p className="text-gray-400">
+            {apiSource === 'impact.com' 
+              ? 'Your Impact.com catalog appears to be empty.'
+              : 'Unable to load products at this time.'}
+          </p>
+        </div>
       </div>
     );
   }
@@ -121,10 +139,13 @@ export default function App() {
           </div>
           
           <h2 className="text-2xl font-bold mb-4">Reached the end!</h2>
-          <p className="text-gray-400 mb-8 max-w-xs">
+          <p className="text-gray-400 mb-2 max-w-xs">
             {hasMore 
               ? "We have more amazing deals waiting for you. Tap below to see more." 
-              : "That's all for today! Check back later for fresh impact.com deals."}
+              : "That's all for today! Check back later for fresh deals."}
+          </p>
+          <p className="text-xs text-gray-600 mb-8">
+            {products.length} products loaded {apiSource === 'impact.com' ? '• Real data from Impact.com' : '• Demo data'}
           </p>
 
           {hasMore && (
