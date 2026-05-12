@@ -286,8 +286,6 @@ function ProductSlide({ product }: { product: Product }) {
           </div>
         )}
       </div>
-        </a>
-      </div>
 
       {/* AI Description Overlay */}
       <AnimatePresence>
