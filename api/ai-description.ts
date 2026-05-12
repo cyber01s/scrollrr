@@ -1,5 +1,16 @@
-import { VercelRequest, VercelResponse } from '@vercel/node';
+import { IncomingMessage, ServerResponse } from 'http';
 import { GoogleGenAI } from '@google/genai';
+
+interface VercelRequest extends IncomingMessage {
+  query?: Record<string, string | string[]>;
+  body?: any;
+}
+
+interface VercelResponse extends ServerResponse {
+  status?: (code: number) => VercelResponse;
+  json?: (data: any) => void;
+  setHeader?: (key: string, value: string) => void;
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Enable CORS

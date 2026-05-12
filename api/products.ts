@@ -1,5 +1,15 @@
-import { VercelRequest, VercelResponse } from '@vercel/node';
+import { IncomingMessage, ServerResponse } from 'http';
 import axios from 'axios';
+
+interface VercelRequest extends IncomingMessage {
+  query?: Record<string, string | string[]>;
+  body?: any;
+}
+
+interface VercelResponse extends ServerResponse {
+  status?: (code: number) => VercelResponse;
+  json?: (data: any) => void;
+}
 
 // Fallback high-quality mock data if API fails or credentials missing
 const MOCK_PRODUCTS = [
