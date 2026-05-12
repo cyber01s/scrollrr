@@ -1,0 +1,46 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "Affiliate product data from Impact.com",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "price": { "type": "number" },
+        "originalPrice": { "type": "number" },
+        "currency": { "type": "string" },
+        "rating": { "type": "number" },
+        "reviewCount": { "type": "number" },
+        "specs": { "type": "array", "items": { "type": "string" } },
+        "affiliateUrl": { "type": "string" },
+        "campaignId": { "type": "string" }
+      },
+      "required": ["id", "name", "imageUrl", "price"]
+    },
+    "ClickTracking": {
+      "title": "ClickTracking",
+      "description": "Records of user interaction for analytics",
+      "type": "object",
+      "properties": {
+        "product_id": { "type": "string" },
+        "source": { "type": "string" },
+        "session_id": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["product_id", "created_at"]
+    }
+  },
+  "firestore": {
+    "products": {
+      "schema": "Product",
+      "description": "Collection of affiliate products"
+    },
+    "click_tracking": {
+      "schema": "ClickTracking",
+      "description": "Collection of click events"
+    }
+  }
+}
