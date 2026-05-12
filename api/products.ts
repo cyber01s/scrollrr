@@ -1,24 +1,5 @@
-import express from 'express';
-import cors from 'cors';
-import dotenv from 'dotenv';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { GoogleGenAI } from '@google/genai';
-import { createServer as createViteServer } from 'vite';
+import { VercelRequest, VercelResponse } from '@vercel/node';
 import axios from 'axios';
-
-dotenv.config();
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-app.use(cors());
-app.use(express.json());
-
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 // Fallback high-quality mock data if API fails or credentials missing
 const MOCK_PRODUCTS = [
@@ -132,8 +113,18 @@ const MOCK_PRODUCTS = [
   }
 ];
 
-// API Routes
-app.get('/api/products', async (req, res) => {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  // Enable CORS
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+  res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version');
+  
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
   const page = parseInt(req.query.page as string) || 1;
   const limit = parseInt(req.query.limit as string) || 3;
 
@@ -147,13 +138,15 @@ app.get('/api/products', async (req, res) => {
       const response = await axios.get(impactUrl, {
         headers: {
           'Authorization': `Basic ${auth}`,
-          'Accept': 'application/json'
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
         },
         params: {
           PageSize: limit,
           PageNumber: page,
           ...(IMPACT_PROGRAM_ID ? { CampaignId: IMPACT_PROGRAM_ID } : {})
-        }
+        },
+        timeout: 10000,
       });
 
       const items = response.data.CatalogItems || [];
@@ -173,7 +166,7 @@ app.get('/api/products', async (req, res) => {
       }));
 
       if (products.length > 0) {
-        return res.json({
+        return res.status(200).json({
           products,
           hasMore: (page * limit) < totalCount,
           total: totalCount
@@ -181,6 +174,7 @@ app.get('/api/products', async (req, res) => {
       }
     } catch (error: any) {
       console.error("Impact API Error:", error?.response?.data || error.message);
+      // Fall through to mock data
     }
   }
 
@@ -190,51 +184,9 @@ app.get('/api/products', async (req, res) => {
   const paginatedProducts = MOCK_PRODUCTS.slice(startIndex, endIndex);
   const hasMore = endIndex < MOCK_PRODUCTS.length;
 
-  res.json({ 
+  res.status(200).json({ 
     products: paginatedProducts,
     hasMore,
     total: MOCK_PRODUCTS.length
   });
-});
-
-app.post('/api/ai-description', async (req, res) => {
-  try {
-    const { productName } = req.body;
-    
-    if (!process.env.GEMINI_API_KEY) {
-       return res.json({ description: "Experience top-tier quality and reliability with the " + productName + ". Perfect for modern homes and lifestyles." });
-    }
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.0-flash',
-      contents: `Write a punchy, engaging 2-sentence TikTok/Reels style product description for: ${productName}. Make it sound like a cool recommendation. Keep it under 150 characters if possible.`
-    });
-
-    res.json({ description: response.text });
-  } catch (error) {
-    console.error("Gemini API Error:", error);
-    res.json({ description: "This top-rated product is designed to bring you the best experience possible." });
-  }
-});
-
-async function startServer() {
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
-  }
-
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
 }
-
-startServer();
