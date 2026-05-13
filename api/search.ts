@@ -2,6 +2,24 @@ import { IncomingMessage } from 'http';
 import axios from 'axios';
 import { Buffer } from 'buffer';
 
+// Upstash Redis
+let redis: any = null;
+const initRedis = () => {
+  if (redis) return redis;
+  try {
+    const { Redis } = require('@upstash/redis');
+    redis = new Redis({
+      url: process.env.UPSTASH_REDIS_URL || process.env.scrollr_REDIS_URL,
+      token: process.env.UPSTASH_REDIS_TOKEN || process.env.scrollr_KV_REST_API_TOKEN,
+    });
+    console.log('[Redis] ✓ Connected to Upstash Redis');
+    return redis;
+  } catch (err) {
+    console.warn('[Redis] Failed to initialize:', err instanceof Error ? err.message : err);
+    return null;
+  }
+};
+
 interface VercelRequest extends IncomingMessage {
   query?: Record<string, string | string[]>;
   body?: any;
@@ -41,7 +59,7 @@ if (!hasImpactCreds) {
   console.error('[Search] ⚠️  Missing Impact.com credentials - will not be able to search');
 }
 
-// In-memory search result cache
+// Fallback in-memory search result cache
 const searchCache: Record<string, { data: any[], timestamp: number }> = {};
 
 function getAuth(index: number) {
@@ -189,22 +207,51 @@ function getCacheKey(query: string): string {
   return `search:${query.toLowerCase()}`;
 }
 
-function getFromCache(query: string): any[] | null {
+async function getFromCache(query: string): Promise<any[] | null> {
   const key = getCacheKey(query);
-  const cached = searchCache[key];
   
-  if (cached && Date.now() - cached.timestamp < SEARCH_CACHE_TTL * 1000) {
-    console.log(`[Cache] Search hit for "${query}"`);
-    return cached.data;
+  try {
+    // Try Redis first
+    const redisClient = initRedis();
+    if (redisClient) {
+      const cached = await redisClient.get(key);
+      if (cached) {
+        console.log(`[Cache] Redis hit for search "${query}"`);
+        return typeof cached === 'string' ? JSON.parse(cached) : cached;
+      }
+    }
+  } catch (err) {
+    console.warn('[Cache] Redis get error:', err instanceof Error ? err.message : err);
+  }
+
+  // Fallback to memory cache
+  const memCached = searchCache[key];
+  if (memCached && Date.now() - memCached.timestamp < SEARCH_CACHE_TTL * 1000) {
+    console.log(`[Cache] Memory hit for search "${query}"`);
+    return memCached.data;
   }
   
   return null;
 }
 
-function setCache(query: string, data: any[]): void {
+async function setCache(query: string, data: any[]): Promise<void> {
   const key = getCacheKey(query);
+  
+  try {
+    // Try Redis first
+    const redisClient = initRedis();
+    if (redisClient) {
+      await redisClient.set(key, JSON.stringify(data), { ex: SEARCH_CACHE_TTL });
+      console.log(`[Cache] Redis set for search "${query}" (${data.length} results, ${SEARCH_CACHE_TTL}s TTL)`);
+      return;
+    }
+  } catch (err) {
+    console.warn('[Cache] Redis set error:', err instanceof Error ? err.message : err);
+  }
+
+  // Fallback to memory cache
   searchCache[key] = { data, timestamp: Date.now() };
-  console.log(`[Cache] Search cached for "${query}" (${data.length} results)`);
+  console.log(`[Cache] Memory set for search "${query}" (${data.length} results)`);
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -233,8 +280,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const cleanQuery = searchQuery.trim();
     console.log(`[Search] Query: "${cleanQuery}"`);
 
-    // 1. Check cache first
-    const cachedResults = getFromCache(cleanQuery);
+    // 1. Check cache first (Redis with fallback to memory)
+    const cachedResults = await getFromCache(cleanQuery);
     if (cachedResults && cachedResults.length > 0) {
       return res.status(200).json(cachedResults);
     }

@@ -2,6 +2,24 @@ import { IncomingMessage } from 'http';
 import axios from 'axios';
 import { Buffer } from 'buffer';
 
+// Upstash Redis
+let redis: any = null;
+const initRedis = () => {
+  if (redis) return redis;
+  try {
+    const { Redis } = require('@upstash/redis');
+    redis = new Redis({
+      url: process.env.UPSTASH_REDIS_URL || process.env.scrollr_REDIS_URL,
+      token: process.env.UPSTASH_REDIS_TOKEN || process.env.scrollr_KV_REST_API_TOKEN,
+    });
+    console.log('[Redis] ✓ Connected to Upstash Redis');
+    return redis;
+  } catch (err) {
+    console.warn('[Redis] Failed to initialize:', err instanceof Error ? err.message : err);
+    return null;
+  }
+};
+
 interface VercelRequest extends IncomingMessage {
   query?: Record<string, string | string[]>;
   body?: any;
@@ -47,7 +65,8 @@ if (!hasImpactCreds) {
   console.log('[Impact] ✓ Credentials loaded successfully');
 }
 
-// Simple in-memory cache for Vercel (survives cold starts within a deployment)
+// Fallback in-memory cache (for when Redis unavailable)
+const memoryCache: Record<string, { data: any[], timestamp: number }> = {};
 const memoryCache: Record<string, { data: any[], timestamp: number }> = {};
 
 function getAuth(index: number) {
@@ -207,20 +226,49 @@ function getCacheKey(page: number): string {
   return `feed:page:${page}`;
 }
 
-function getFromMemoryCache(page: number): any[] | null {
+async function getFromCache(page: number): Promise<any[] | null> {
   const key = getCacheKey(page);
-  const cached = memoryCache[key];
   
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL * 1000) {
-    console.log(`[Cache] Memory hit for ${key}`);
-    return cached.data;
+  try {
+    // Try Redis first
+    const redisClient = initRedis();
+    if (redisClient) {
+      const cached = await redisClient.get(key);
+      if (cached) {
+        console.log(`[Cache] Redis hit for ${key}`);
+        return typeof cached === 'string' ? JSON.parse(cached) : cached;
+      }
+    }
+  } catch (err) {
+    console.warn('[Cache] Redis get error:', err instanceof Error ? err.message : err);
   }
-  
+
+  // Fallback to memory cache
+  const memCached = memoryCache[key];
+  if (memCached && Date.now() - memCached.timestamp < CACHE_TTL * 1000) {
+    console.log(`[Cache] Memory hit for ${key}`);
+    return memCached.data;
+  }
+
   return null;
 }
 
-function setMemoryCache(page: number, data: any[]): void {
+async function setCache(page: number, data: any[]): Promise<void> {
   const key = getCacheKey(page);
+  
+  try {
+    // Try Redis first
+    const redisClient = initRedis();
+    if (redisClient) {
+      await redisClient.set(key, JSON.stringify(data), { ex: CACHE_TTL });
+      console.log(`[Cache] Redis set for ${key} (${data.length} items, ${CACHE_TTL}s TTL)`);
+      return;
+    }
+  } catch (err) {
+    console.warn('[Cache] Redis set error:', err instanceof Error ? err.message : err);
+  }
+
+  // Fallback to memory cache
   memoryCache[key] = { data, timestamp: Date.now() };
   console.log(`[Cache] Memory set for ${key} (${data.length} items)`);
 }
@@ -246,8 +294,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     console.log(`[Feed] Request: page=${page}`);
 
-    // 1. Check memory cache first
-    const cachedData = getFromMemoryCache(page);
+    // 1. Check cache (Redis with fallback to memory)
+    const cachedData = await getFromCache(page);
     if (cachedData && cachedData.length > 0) {
       return res.status(200).json(cachedData);
     }
@@ -268,8 +316,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const products = await fetchFromImpactAPI(page);
 
     if (products && products.length > 0) {
-      // Cache the results
-      setMemoryCache(page, products);
+      // Cache the results (async but don't wait)
+      setCache(page, products);
       console.log(`[Feed] ✓ Returning ${products.length} products from Impact.com`);
       return res.status(200).json(products);
     }
