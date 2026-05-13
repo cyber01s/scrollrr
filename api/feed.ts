@@ -67,7 +67,6 @@ if (!hasImpactCreds) {
 
 // Fallback in-memory cache (for when Redis unavailable)
 const memoryCache: Record<string, { data: any[], timestamp: number }> = {};
-const memoryCache: Record<string, { data: any[], timestamp: number }> = {};
 
 function getAuth(index: number) {
   let sid = SIDs[index] || SIDs[0];
