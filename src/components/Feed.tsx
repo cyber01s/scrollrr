@@ -10,7 +10,7 @@ export default function Feed() {
   const observerTarget = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const fetchFeed = async ({ pageParam = 0 }) => {
+  const fetchFeed = useCallback(async ({ pageParam = 0 }) => {
     try {
       const url = `/api/feed?page=${pageParam}`;
       console.log(`[Feed] Fetching: ${url}`);
@@ -71,7 +71,7 @@ export default function Feed() {
       console.error("Feed fetch failed:", e);
       throw e;
     }
-  };
+  }, []);
 
   const {
     data,

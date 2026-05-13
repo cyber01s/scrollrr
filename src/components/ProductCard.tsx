@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   motion,
   useScroll,
@@ -79,7 +79,7 @@ export default function ProductCard({ product, index }: ProductCardProps) {
   const [specsLoading, setSpecsLoading] = useState(false);
   const [specsError, setSpecsError] = useState(false);
 
-  const fetchSmartSpecs = async () => {
+  const fetchSmartSpecs = useCallback(async () => {
     setSpecsLoading(true);
     setSpecsError(false);
     try {
@@ -98,13 +98,13 @@ export default function ProductCard({ product, index }: ProductCardProps) {
     } finally {
       setSpecsLoading(false);
     }
-  };
+  }, [product.id, product.name, product.category]);
 
   useEffect(() => {
     if (showSheet && !smartSpecs && !specsError) {
       fetchSmartSpecs();
     }
-  }, [showSheet]);
+  }, [showSheet, smartSpecs, specsError, fetchSmartSpecs]);
 
   const [longPressTimer, setLongPressTimer] = useState<NodeJS.Timeout | null>(
     null,
