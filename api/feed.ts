@@ -183,30 +183,14 @@ async function fetchFromImpactAPI(page: number): Promise<any[]> {
 
   try {
     const impactPage = page + 1;
-    const partnerRequests = SIDs.map(async (sid, i) => {
+    const partnerRequests = PROGRAM_IDS.map(async (programId, i) => {
+      const sid = SIDs[i] || SIDs[0];
       const { header } = getAuth(i);
-      
+
       try {
-        // Fetch catalogs with timeout
-        const catRes = await axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/`, {
-          headers: { Accept: "application/json", Authorization: header },
-          timeout: API_TIMEOUT
-        }).catch((err) => {
-          console.error(`[Impact] Catalog fetch error:`, err.response?.status, err.message);
-          if (err.response?.data) console.error(`[Impact] Catalog response:`, typeof err.response.data === 'string' ? err.response.data.substring(0, 500) : err.response.data);
-          return null;
-        });
-
-        if (!catRes?.data?.Catalogs || catRes.data.Catalogs.length === 0) {
-          console.warn(`[Impact] No catalogs found for SID ${sid}`);
-          if (catRes?.data) console.warn(`[Impact] Catalog response keys:`, Object.keys(catRes.data));
-          return [];
-        }
-
-        const cid = catRes.data.Catalogs[0].Id || catRes.data.Catalogs[0].CatalogId;
-        
-        // Fetch products with retry logic
-        return await fetchFromImpactWithRetry(sid, cid, impactPage, header);
+        // Use PROGRAM_ID directly as catalog ID
+        console.log(`[Impact] Fetching products for SID=${sid}, ProgramID=${programId}, Page=${impactPage}`);
+        return await fetchFromImpactWithRetry(sid, programId, impactPage, header);
 
       } catch (err) {
         console.error(`[Impact] Catalog fetch error for SID ${sid}:`, err instanceof Error ? err.message : err);
