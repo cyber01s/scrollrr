@@ -129,21 +129,25 @@ async function fetchFromImpactWithRetry(sid: string, cid: string, page: number, 
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
+      const url = `https://api.impact.com/Mediapartners/${sid}/Catalogs/${cid}/ItemSearch`;
+      console.log(`[Impact] Request attempt ${attempt + 1}: ${url}`);
+      console.log(`[Impact] Auth header length:`, header.length, `starts with:`, header.substring(0, 10));
+
       // Add exponential backoff
       if (attempt > 0) {
         await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 500));
       }
 
-      const itemsRes = await axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/${cid}/ItemSearch`, {
-        headers: { 
-          Accept: "application/json", 
+      const itemsRes = await axios.get(url, {
+        headers: {
+          Accept: "application/json",
           Authorization: header,
           "User-Agent": "Scrollrr/1.0"
         },
-        params: { 
-          PageSize: 12, 
-          Page: page, 
-          QueryString: "*" 
+        params: {
+          PageSize: 12,
+          Page: page,
+          QueryString: "*"
         },
         timeout: API_TIMEOUT
       });
@@ -157,17 +161,20 @@ async function fetchFromImpactWithRetry(sid: string, cid: string, page: number, 
       lastError = err;
       const status = err.response?.status;
 
+      console.error(`[Impact] Attempt ${attempt + 1} failed: ${status || 'no status'} - ${err.message}`);
+      if (err.response?.data) {
+        const data = typeof err.response.data === 'string' ? err.response.data : JSON.stringify(err.response.data);
+        console.error(`[Impact] Error response:`, data.substring(0, 500));
+      }
+      if (err.response?.headers) {
+        console.error(`[Impact] Response headers:`, JSON.stringify(err.response.headers));
+      }
+
       // Don't retry on 401/403 (auth issues) or 429 (rate limited)
       if (status === 401 || status === 403 || status === 429) {
         console.warn(`[Impact] Auth/Rate error (${status}) - stopping retries`);
-        console.warn(`[Impact] Response:`, err.response?.data?.substring?.(0, 500) || err.response?.data);
         break;
       }
-
-      // Log each attempt with more details
-      console.warn(`[Impact] Attempt ${attempt + 1}/${MAX_RETRIES} failed:`, err.message);
-      if (status) console.warn(`[Impact] HTTP Status:`, status);
-      if (err.response?.data) console.warn(`[Impact] Response:`, typeof err.response.data === 'string' ? err.response.data.substring(0, 500) : err.response.data);
     }
   }
 
