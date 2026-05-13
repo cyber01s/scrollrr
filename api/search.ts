@@ -31,10 +31,15 @@ const PROGRAM_IDS = (process.env.IMPACT_PROGRAM_ID || "")
   .filter(Boolean);
 
 const IMPACT_PARTNER_PROPERTY_ID = "6988584";
-const hasImpactCreds = SIDs.length > 0 && TOKENS.length > 0;
+const hasImpactCreds = SIDs.length > 0 && TOKENS.length > 0 && PROGRAM_IDS.length > 0;
 const SEARCH_CACHE_TTL = 3600; // 1 hour
 const API_TIMEOUT = 4000;
 const MAX_RETRIES = 2;
+
+// Log credentials status
+if (!hasImpactCreds) {
+  console.error('[Search] ⚠️  Missing Impact.com credentials - will not be able to search');
+}
 
 // In-memory search result cache
 const searchCache: Record<string, { data: any[], timestamp: number }> = {};

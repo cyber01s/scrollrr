@@ -22,6 +22,10 @@
       "destination": "/api/ai-description.ts"
     },
     {
+      "source": "/api/diagnostic",
+      "destination": "/api/diagnostic.ts"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api/index.ts"
     },

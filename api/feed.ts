@@ -31,10 +31,21 @@ const PROGRAM_IDS = (process.env.IMPACT_PROGRAM_ID || "")
   .filter(Boolean);
 
 const IMPACT_PARTNER_PROPERTY_ID = "6988584";
-const hasImpactCreds = SIDs.length > 0 && TOKENS.length > 0;
+const hasImpactCreds = SIDs.length > 0 && TOKENS.length > 0 && PROGRAM_IDS.length > 0;
 const CACHE_TTL = 3600 * 2; // 2 hours cache
 const API_TIMEOUT = 4000; // 4 second timeout per request
 const MAX_RETRIES = 2;
+
+// Log credentials status at startup
+if (!hasImpactCreds) {
+  console.error('[Impact] ⚠️  CRITICAL: Missing credentials!');
+  console.error(`  IMPACT_ACCOUNT_SID: ${SIDs.length > 0 ? '✓ Set' : '✗ Missing'}`);
+  console.error(`  IMPACT_AUTH_TOKEN: ${TOKENS.length > 0 ? '✓ Set' : '✗ Missing'}`);
+  console.error(`  IMPACT_PROGRAM_ID: ${PROGRAM_IDS.length > 0 ? '✓ Set' : '✗ Missing'}`);
+  console.error('[Impact] Please set these in Vercel → Settings → Environment Variables');
+} else {
+  console.log('[Impact] ✓ Credentials loaded successfully');
+}
 
 // Simple in-memory cache for Vercel (survives cold starts within a deployment)
 const memoryCache: Record<string, { data: any[], timestamp: number }> = {};
@@ -243,7 +254,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // 2. Validate credentials
     if (!hasImpactCreds) {
-      console.error('[Feed] Impact.com credentials not configured');
+      console.error('[Feed] ❌ Impact.com credentials not configured');
+      console.error('[Feed] Need to set on Vercel:');
+      console.error('[Feed]   - IMPACT_ACCOUNT_SID');
+      console.error('[Feed]   - IMPACT_AUTH_TOKEN');
+      console.error('[Feed]   - IMPACT_PROGRAM_ID');
+      console.error('[Feed] Go to: Vercel Dashboard → scrollrr → Settings → Environment Variables');
       return res.status(200).json([]);
     }
 
@@ -254,12 +270,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (products && products.length > 0) {
       // Cache the results
       setMemoryCache(page, products);
-      console.log(`[Feed] Returning ${products.length} products from Impact.com`);
+      console.log(`[Feed] ✓ Returning ${products.length} products from Impact.com`);
       return res.status(200).json(products);
     }
 
     // 4. Return empty if no products (instead of error)
-    console.warn(`[Feed] No products for page ${page}`);
+    console.warn(`[Feed] No products returned for page ${page}`);
     return res.status(200).json([]);
 
   } catch (error: any) {
