@@ -415,6 +415,8 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
   }, 8000);
 
   try {
+    console.log(`[Feed][${requestId}] Starting feed request for page ${page}`);
+    
     // 0. CHECK REDIS FIRST (Reduce hits to Firestore/Impact)
     if (isRedisReady()) {
       try {
@@ -436,11 +438,15 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
       }
     }
 
-    // 1. Lazy infra init
-    await Promise.race([
-      initInfrastructure(),
-      new Promise(resolve => setTimeout(resolve, 3000))
-    ]).catch(e => console.error(`[Feed][${requestId}] Infra error:`, e));
+    // 1. Lazy infra init (with better error handling)
+    try {
+      await Promise.race([
+        initInfrastructure(),
+        new Promise(resolve => setTimeout(resolve, 3000))
+      ]).catch(e => console.warn(`[Feed][${requestId}] Infra init warning (non-fatal):`, e));
+    } catch (infraError: any) {
+      console.warn(`[Feed][${requestId}] Infra init failed (continuing with fallbacks):`, infraError.message);
+    }
 
     // 2. Try Postgres (Primary)
     if (pgPool) {
@@ -596,6 +602,7 @@ const feedHandler = async (req: express.Request, res: express.Response) => {
     if (!isResponseSent) {
       isResponseSent = true;
       clearTimeout(timeoutId);
+      console.log(`[Feed][${requestId}] Returning mock data due to error`);
       return res.json(generateMockProducts(12, page));
     }
   }
