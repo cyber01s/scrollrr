@@ -48,6 +48,11 @@ const PROGRAM_IDS = (process.env.IMPACT_PROGRAM_ID || "")
   .map((s) => s.trim())
   .filter(Boolean);
 
+const CATALOG_IDS = (process.env.IMPACT_CATALOG_ID || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 const IMPACT_PARTNER_PROPERTY_ID = "6988584";
 const hasImpactCreds = SIDs.length > 0 && TOKENS.length > 0 && PROGRAM_IDS.length > 0;
 const CACHE_TTL = 3600 * 2; // 2 hours cache
@@ -129,7 +134,7 @@ async function fetchFromImpactWithRetry(sid: string, cid: string, page: number, 
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
-      const url = `https://api.impact.com/Mediapartners/${sid}/Catalogs/${cid}/ItemSearch`;
+      const url = `https://api.impact.com/Mediapartners/${sid}/Catalogs/${cid}/Items`;
       console.log(`[Impact] Request attempt ${attempt + 1}: ${url}`);
       console.log(`[Impact] Auth header length:`, header.length, `starts with:`, header.substring(0, 10));
 
@@ -188,16 +193,20 @@ async function fetchFromImpactAPI(page: number): Promise<any[]> {
     return [];
   }
 
+  if (!CATALOG_IDS.length) {
+    console.error('[Impact] No catalog IDs configured - set IMPACT_CATALOG_ID in Vercel Environment Variables');
+    return [];
+  }
+
   try {
     const impactPage = page + 1;
-    const partnerRequests = PROGRAM_IDS.map(async (programId, i) => {
+    const partnerRequests = CATALOG_IDS.map(async (catalogId, i) => {
       const sid = SIDs[i] || SIDs[0];
       const { header } = getAuth(i);
 
       try {
-        // Use PROGRAM_ID directly as catalog ID
-        console.log(`[Impact] Fetching products for SID=${sid}, ProgramID=${programId}, Page=${impactPage}`);
-        return await fetchFromImpactWithRetry(sid, programId, impactPage, header);
+        console.log(`[Impact] Fetching products for SID=${sid}, CatalogID=${catalogId}, Page=${impactPage}`);
+        return await fetchFromImpactWithRetry(sid, catalogId, impactPage, header);
 
       } catch (err) {
         console.error(`[Impact] Catalog fetch error for SID ${sid}:`, err instanceof Error ? err.message : err);
