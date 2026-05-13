@@ -10,6 +10,10 @@
       "destination": "/api/search.ts"
     },
     {
+      "source": "/api/specs",
+      "destination": "/api/specs.ts"
+    },
+    {
       "source": "/api/products",
       "destination": "/api/products.ts"
     },

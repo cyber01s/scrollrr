@@ -84,6 +84,7 @@ export default function ProductCard({ product, index }: ProductCardProps) {
     setSpecsError(false);
     try {
       const qs = new URLSearchParams({
+        id: product.id,
         name: product.name,
         category: product.category || ""
       });
