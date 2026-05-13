@@ -2,6 +2,22 @@
   "version": 2,
   "rewrites": [
     {
+      "source": "/api/feed",
+      "destination": "/api/feed.ts"
+    },
+    {
+      "source": "/api/search",
+      "destination": "/api/search.ts"
+    },
+    {
+      "source": "/api/products",
+      "destination": "/api/products.ts"
+    },
+    {
+      "source": "/api/ai-description",
+      "destination": "/api/ai-description.ts"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api/index.ts"
     },

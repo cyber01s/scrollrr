@@ -6,10 +6,11 @@ interface VercelRequest extends IncomingMessage {
   body?: any;
 }
 
-interface VercelResponse extends ServerResponse {
-  status?: (code: number) => VercelResponse;
-  json?: (data: any) => void;
-  setHeader?: (key: string, value: string) => void;
+interface VercelResponse {
+  status: (code: number) => VercelResponse;
+  json: (data: any) => void;
+  setHeader: (key: string, value: string) => VercelResponse;
+  end: () => void;
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {

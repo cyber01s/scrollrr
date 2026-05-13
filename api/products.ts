@@ -6,9 +6,11 @@ interface VercelRequest extends IncomingMessage {
   body?: any;
 }
 
-interface VercelResponse extends ServerResponse {
-  status?: (code: number) => VercelResponse;
-  json?: (data: any) => void;
+interface VercelResponse {
+  status: (code: number) => VercelResponse;
+  json: (data: any) => void;
+  setHeader: (key: string, value: string) => VercelResponse;
+  end: () => void;
 }
 
 // Mock data fallback with realistic products
