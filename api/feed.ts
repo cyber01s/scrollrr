@@ -1,4 +1,6 @@
 import { IncomingMessage } from 'http';
+import axios from 'axios';
+import { Buffer } from 'buffer';
 
 interface VercelRequest extends IncomingMessage {
   query?: Record<string, string | string[]>;
@@ -12,149 +14,204 @@ interface VercelResponse {
   end: () => void;
 }
 
-const REAL_PRODUCTS = [
-  {
-    id: "sony-wh1000xm5",
-    name: "Sony WH-1000XM5 Wireless Headphones",
-    category: "AUDIO",
-    imageUrl: "https://images.unsplash.com/photo-1505740420928-5e560c06d30e?auto=format&fit=crop&q=80&w=1000",
-    price: 348.00,
-    originalPrice: 398.00,
-    currency: "USD",
-    rating: 4.8,
-    reviewCount: 3420,
-    specs: ["ANC Technology", "30-Hour Battery"],
-    destinationUrl: "https://www.bestbuy.com/site/sony-wh1000xm5/6510150.p",
-    partnerId: "6183063",
-    campaignId: "1236776",
-  },
-  {
-    id: "dji-air3s",
-    name: "DJI Air 3S Drone",
-    category: "CAMERAS",
-    imageUrl: "https://images.unsplash.com/photo-1526170375885-4d8ecf77b99f?auto=format&fit=crop&q=80&w=1000",
-    price: 1099.00,
-    originalPrice: 1199.00,
-    currency: "USD",
-    rating: 4.9,
-    reviewCount: 2156,
-    specs: ["4K Camera", "42-Min Flight Time"],
-    destinationUrl: "https://www.bhphotovideo.com/c/product/1697851-REG/dji_cp.ma_42_air3s.html",
-    partnerId: "6183063",
-    campaignId: "1236776",
-  },
-  {
-    id: "apple-watch-series9",
-    name: "Apple Watch Series 9",
-    category: "TECH",
-    imageUrl: "https://images.unsplash.com/photo-1523275335684-37898b6baf30?auto=format&fit=crop&q=80&w=1000",
-    price: 399.00,
-    originalPrice: 429.00,
-    currency: "USD",
-    rating: 4.7,
-    reviewCount: 5230,
-    specs: ["LTPO OLED Display", "Always-On"],
-    destinationUrl: "https://www.apple.com/watch/",
-    partnerId: "6183063",
-    campaignId: "1236776",
-  },
-  {
-    id: "playstation5",
-    name: "PlayStation 5 Console",
-    category: "GAMING",
-    imageUrl: "https://images.unsplash.com/photo-1542291026-7eec264c27ff?auto=format&fit=crop&q=80&w=1000",
-    price: 499.00,
-    originalPrice: 499.00,
-    currency: "USD",
-    rating: 4.6,
-    reviewCount: 8342,
-    specs: ["4K Gaming", "120fps Support"],
-    destinationUrl: "https://www.playstation.com/en-us/ps5/",
-    partnerId: "6183063",
-    campaignId: "1236776",
-  },
-  {
-    id: "dyson-v15",
-    name: "Dyson V15 Detect Vacuum",
-    category: "HOME",
-    imageUrl: "https://images.unsplash.com/photo-1558317374-067fb5f30001?auto=format&fit=crop&q=80&w=1000",
-    price: 649.99,
-    originalPrice: 749.99,
-    currency: "USD",
-    rating: 4.8,
-    reviewCount: 1890,
-    specs: ["Laser Dust Detection", "60-Min Runtime"],
-    destinationUrl: "https://www.dyson.com/vacuums/cordless/dyson-v15-detect/",
-    partnerId: "6183063",
-    campaignId: "1236776",
-  },
-  {
-    id: "peloton-bike-plus",
-    name: "Peloton Bike+",
-    category: "FITNESS",
-    imageUrl: "https://images.unsplash.com/photo-1610438235354-a6ae5528385c?auto=format&fit=crop&q=80&w=1000",
-    price: 1995.00,
-    originalPrice: 2145.00,
-    currency: "USD",
-    rating: 4.5,
-    reviewCount: 1245,
-    specs: ["22-Inch Touchscreen", "Auto-Resistance"],
-    destinationUrl: "https://www.onepeloton.com/shop/bikes/",
-    partnerId: "6183063",
-    campaignId: "1236776",
-  },
-  {
-    id: "yeti-rambler-26",
-    name: "YETI Rambler 26oz Bottle",
-    category: "OUTDOOR",
-    imageUrl: "https://images.unsplash.com/photo-1583394838336-acd977736f90?auto=format&fit=crop&q=80&w=1000",
-    price: 45.00,
-    originalPrice: 45.00,
-    currency: "USD",
-    rating: 4.9,
-    reviewCount: 6542,
-    specs: ["Vacuum Insulated", "Leakproof Cap"],
-    destinationUrl: "https://www.yeticoolers.com/collections/drinkware",
-    partnerId: "6183063",
-    campaignId: "1236776",
-  },
-  {
-    id: "gopro-hero12",
-    name: "GoPro HERO 12 Black",
-    category: "CAMERAS",
-    imageUrl: "https://images.unsplash.com/photo-1546435770-a3e426bf472b?auto=format&fit=crop&q=80&w=1000",
-    price: 499.99,
-    originalPrice: 499.99,
-    currency: "USD",
-    rating: 4.7,
-    reviewCount: 3210,
-    specs: ["5.3K Video", "Stabilization"],
-    destinationUrl: "https://gopro.com/en/us/shop/hero12-black.html",
-    partnerId: "6183063",
-    campaignId: "1236776",
-  },
-];
+// Impact.com Configuration
+const SIDs = (process.env.IMPACT_ACCOUNT_SID || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
-function buildAffiliateUrl(product: any, page: number, index: number): string {
-  const trackingId = `${page}-${index}`;
-  return `https://buybestgear.sjv.io/c/${product.partnerId}/${product.campaignId}?u=${encodeURIComponent(product.destinationUrl)}&src=scrollr-${trackingId}&pid=${product.id}`;
+const TOKENS = (process.env.IMPACT_AUTH_TOKEN || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+const PROGRAM_IDS = (process.env.IMPACT_PROGRAM_ID || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+const IMPACT_PARTNER_PROPERTY_ID = "6988584";
+const hasImpactCreds = SIDs.length > 0 && TOKENS.length > 0;
+const CACHE_TTL = 3600 * 2; // 2 hours cache
+const API_TIMEOUT = 4000; // 4 second timeout per request
+const MAX_RETRIES = 2;
+
+// Simple in-memory cache for Vercel (survives cold starts within a deployment)
+const memoryCache: Record<string, { data: any[], timestamp: number }> = {};
+
+function getAuth(index: number) {
+  let sid = SIDs[index] || SIDs[0];
+  let token = TOKENS[index] || TOKENS[0];
+  return {
+    sid,
+    token,
+    header: `Basic ${Buffer.from(`${sid}:${token}`).toString("base64")}`,
+  };
 }
 
-function generateMockProducts(count: number, page: number): any[] {
-  const startIdx = (page * count) % REAL_PRODUCTS.length;
-  const products = [];
+function normalizeProduct(raw: any, sid: string) {
+  if (!raw) return null;
   
-  for (let i = 0; i < count; i++) {
-    const productIdx = (startIdx + i) % REAL_PRODUCTS.length;
-    const baseProduct = REAL_PRODUCTS[productIdx];
-    
-    products.push({
-      ...baseProduct,
-      affiliateUrl: buildAffiliateUrl(baseProduct, page, i),
-    });
+  const price = parseFloat(String(raw.Price || raw.CurrentPrice || "0"));
+  if (isNaN(price) || price <= 0) return null;
+
+  const originalPrice = raw.OriginalPrice ? parseFloat(String(raw.OriginalPrice)) : null;
+  const campaignId = String(raw.CatalogId || PROGRAM_IDS[0] || "1236776");
+  
+  // Filter out unwanted campaigns
+  if (campaignId === "18350" || campaignId === "12108") {
+    return null;
   }
   
-  return products;
+  const destUrl = String(raw.TrackingUrl || raw.TrackingLink || raw.ProductUrl || raw.Url || "");
+  if (!destUrl || destUrl.length < 10) return null;
+
+  // Use Impact.com tracking URL directly when available
+  let affiliateUrl = destUrl;
+  if (raw.TrackingUrl) {
+    // Already has tracking built in
+    affiliateUrl = destUrl;
+  } else if (sid && !destUrl.includes("/c/") && !destUrl.includes("sjv.io") && !destUrl.includes("impact.com")) {
+    // Wrap in sjv.io if not already wrapped
+    affiliateUrl = `https://buybestgear.sjv.io/c/${sid}/${campaignId}?u=${encodeURIComponent(destUrl)}&partnerpropertyid=${IMPACT_PARTNER_PROPERTY_ID}`;
+  }
+
+  const desc = String(raw.Description || "").substring(0, 200);
+
+  return {
+    id: String(raw.Id || raw.ProductId || `prod-${Math.random()}`),
+    name: String(raw.Name || raw.ProductName || "Product").substring(0, 150),
+    category: String(raw.Category || "Uncategorized").substring(0, 50),
+    imageUrl: String(raw.ImageUri || raw.ImageLink || raw.ImageUrl || ""),
+    price: price,
+    originalPrice: originalPrice && originalPrice > price ? originalPrice : null,
+    currency: String(raw.Currency || "USD"),
+    rating: raw.Rating ? Math.min(5, Math.max(0, parseFloat(String(raw.Rating)))) : 4.5,
+    reviewCount: raw.ReviewCount ? parseInt(String(raw.ReviewCount)) : 0,
+    specs: desc ? desc.split(".").slice(0, 2).map((s: string) => s.trim()).filter(Boolean) : [],
+    affiliateUrl,
+    campaignId,
+    sourceId: sid,
+  };
+}
+
+async function fetchFromImpactWithRetry(sid: string, cid: string, page: number, header: string): Promise<any[]> {
+  let lastError: any = null;
+
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      // Add exponential backoff
+      if (attempt > 0) {
+        await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 500));
+      }
+
+      const itemsRes = await axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/${cid}/ItemSearch`, {
+        headers: { 
+          Accept: "application/json", 
+          Authorization: header,
+          "User-Agent": "Scrollrr/1.0"
+        },
+        params: { 
+          PageSize: 12, 
+          Page: page, 
+          QueryString: "*" 
+        },
+        timeout: API_TIMEOUT
+      });
+
+      const items = itemsRes?.data?.Items || itemsRes?.data?.Products || [];
+      return items
+        .map((p: any) => normalizeProduct(p, sid))
+        .filter((p: any) => p && p.imageUrl && p.price > 0);
+
+    } catch (err: any) {
+      lastError = err;
+      const status = err.response?.status;
+      
+      // Don't retry on 401/403 (auth issues) or 429 (rate limited)
+      if (status === 401 || status === 403 || status === 429) {
+        console.warn(`[Impact] Auth/Rate error (${status}) - stopping retries`);
+        break;
+      }
+
+      // Log each attempt
+      console.warn(`[Impact] Attempt ${attempt + 1}/${MAX_RETRIES} failed:`, err.message);
+    }
+  }
+
+  console.error(`[Impact] Failed after ${MAX_RETRIES} attempts:`, lastError?.message);
+  return [];
+}
+
+async function fetchFromImpactAPI(page: number): Promise<any[]> {
+  if (!hasImpactCreds) {
+    console.warn('[Impact] No credentials available');
+    return [];
+  }
+
+  try {
+    const impactPage = page + 1;
+    const partnerRequests = SIDs.map(async (sid, i) => {
+      const { header } = getAuth(i);
+      
+      try {
+        // Fetch catalogs with timeout
+        const catRes = await axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/`, {
+          headers: { Accept: "application/json", Authorization: header },
+          timeout: API_TIMEOUT
+        }).catch(() => null);
+
+        if (!catRes?.data?.Catalogs || catRes.data.Catalogs.length === 0) {
+          console.warn(`[Impact] No catalogs found for SID ${sid}`);
+          return [];
+        }
+
+        const cid = catRes.data.Catalogs[0].Id || catRes.data.Catalogs[0].CatalogId;
+        
+        // Fetch products with retry logic
+        return await fetchFromImpactWithRetry(sid, cid, impactPage, header);
+
+      } catch (err) {
+        console.error(`[Impact] Catalog fetch error for SID ${sid}:`, err instanceof Error ? err.message : err);
+        return [];
+      }
+    });
+
+    const results = await Promise.race([
+      Promise.all(partnerRequests),
+      new Promise<any[][]>((_, reject) => 
+        setTimeout(() => reject(new Error('API fetch timeout')), 15000)
+      )
+    ]);
+
+    const products = results.flat().slice(0, 12);
+    return products;
+  } catch (error) {
+    console.error('[Impact] API fetch error:', error instanceof Error ? error.message : error);
+    return [];
+  }
+}
+
+function getCacheKey(page: number): string {
+  return `feed:page:${page}`;
+}
+
+function getFromMemoryCache(page: number): any[] | null {
+  const key = getCacheKey(page);
+  const cached = memoryCache[key];
+  
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL * 1000) {
+    console.log(`[Cache] Memory hit for ${key}`);
+    return cached.data;
+  }
+  
+  return null;
+}
+
+function setMemoryCache(page: number, data: any[]): void {
+  const key = getCacheKey(page);
+  memoryCache[key] = { data, timestamp: Date.now() };
+  console.log(`[Cache] Memory set for ${key} (${data.length} items)`);
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -175,21 +232,39 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const page = parseInt(req.query?.page as string) || 0;
-    const requestId = Math.random().toString(36).substring(7);
 
-    console.log(`[Feed][${requestId}] Vercel serverless request: page=${page}`);
+    console.log(`[Feed] Request: page=${page}`);
 
-    // For Vercel, we'll use mock data as the primary source
-    // since we can't maintain persistent connections to databases
-    const products = generateMockProducts(12, page);
+    // 1. Check memory cache first
+    const cachedData = getFromMemoryCache(page);
+    if (cachedData && cachedData.length > 0) {
+      return res.status(200).json(cachedData);
+    }
 
-    console.log(`[Feed][${requestId}] Returning ${products.length} mock products`);
-    return res.status(200).json(products);
+    // 2. Validate credentials
+    if (!hasImpactCreds) {
+      console.error('[Feed] Impact.com credentials not configured');
+      return res.status(200).json([]);
+    }
+
+    // 3. Fetch from Impact.com API
+    console.log(`[Feed] Fetching from Impact.com API...`);
+    const products = await fetchFromImpactAPI(page);
+
+    if (products && products.length > 0) {
+      // Cache the results
+      setMemoryCache(page, products);
+      console.log(`[Feed] Returning ${products.length} products from Impact.com`);
+      return res.status(200).json(products);
+    }
+
+    // 4. Return empty if no products (instead of error)
+    console.warn(`[Feed] No products for page ${page}`);
+    return res.status(200).json([]);
 
   } catch (error: any) {
-    console.error('Feed serverless error:', error);
-    // Always return mock data as fallback
-    const products = generateMockProducts(12, 0);
-    return res.status(200).json(products);
+    console.error('[Feed] Error:', error instanceof Error ? error.message : error);
+    // Always return 200 with empty array to avoid client errors
+    return res.status(200).json([]);
   }
 }
