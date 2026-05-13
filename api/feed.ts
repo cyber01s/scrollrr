@@ -156,15 +156,18 @@ async function fetchFromImpactWithRetry(sid: string, cid: string, page: number, 
     } catch (err: any) {
       lastError = err;
       const status = err.response?.status;
-      
+
       // Don't retry on 401/403 (auth issues) or 429 (rate limited)
       if (status === 401 || status === 403 || status === 429) {
         console.warn(`[Impact] Auth/Rate error (${status}) - stopping retries`);
+        console.warn(`[Impact] Response:`, err.response?.data?.substring?.(0, 500) || err.response?.data);
         break;
       }
 
-      // Log each attempt
+      // Log each attempt with more details
       console.warn(`[Impact] Attempt ${attempt + 1}/${MAX_RETRIES} failed:`, err.message);
+      if (status) console.warn(`[Impact] HTTP Status:`, status);
+      if (err.response?.data) console.warn(`[Impact] Response:`, typeof err.response.data === 'string' ? err.response.data.substring(0, 500) : err.response.data);
     }
   }
 
@@ -188,10 +191,15 @@ async function fetchFromImpactAPI(page: number): Promise<any[]> {
         const catRes = await axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/`, {
           headers: { Accept: "application/json", Authorization: header },
           timeout: API_TIMEOUT
-        }).catch(() => null);
+        }).catch((err) => {
+          console.error(`[Impact] Catalog fetch error:`, err.response?.status, err.message);
+          if (err.response?.data) console.error(`[Impact] Catalog response:`, typeof err.response.data === 'string' ? err.response.data.substring(0, 500) : err.response.data);
+          return null;
+        });
 
         if (!catRes?.data?.Catalogs || catRes.data.Catalogs.length === 0) {
           console.warn(`[Impact] No catalogs found for SID ${sid}`);
+          if (catRes?.data) console.warn(`[Impact] Catalog response keys:`, Object.keys(catRes.data));
           return [];
         }
 
