@@ -65,6 +65,8 @@ export default function ProductCard({ product, index }: ProductCardProps) {
     window.open(product.affiliateUrl, "_blank", "noopener");
   };
 
+  const specsCache = useFeedStore((state) => state.specsCache);
+  const setSpecsCache = useFeedStore((state) => state.setSpecsCache);
   const { scrollYProgress } = useScroll({
     target: containerRef,
     offset: ["start end", "end start"],
@@ -80,6 +82,11 @@ export default function ProductCard({ product, index }: ProductCardProps) {
   const [specsError, setSpecsError] = useState(false);
 
   const fetchSmartSpecs = useCallback(async () => {
+    if (specsCache[product.id]) {
+      setSmartSpecs(specsCache[product.id]);
+      return;
+    }
+
     setSpecsLoading(true);
     setSpecsError(false);
     try {
@@ -92,13 +99,14 @@ export default function ProductCard({ product, index }: ProductCardProps) {
       if (!res.ok) throw new Error("Failed to fetch specs");
       const specs = await res.json();
       setSmartSpecs(specs);
+      setSpecsCache(product.id, specs);
     } catch (error) {
       console.error("AI Analysis error:", error);
       setSpecsError(true);
     } finally {
       setSpecsLoading(false);
     }
-  }, [product.id, product.name, product.category]);
+  }, [product.id, product.name, product.category, specsCache, setSpecsCache]);
 
   useEffect(() => {
     if (showSheet && !smartSpecs && !specsError) {

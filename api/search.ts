@@ -43,13 +43,13 @@ const TOKENS = (process.env.IMPACT_AUTH_TOKEN || "")
   .map((s) => s.trim())
   .filter(Boolean);
 
-const PROGRAM_IDS = (process.env.IMPACT_PROGRAM_ID || "")
+const CATALOG_IDS = (process.env.IMPACT_CATALOG_ID || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
 const IMPACT_PARTNER_PROPERTY_ID = "6988584";
-const hasImpactCreds = SIDs.length > 0 && TOKENS.length > 0 && PROGRAM_IDS.length > 0;
+const hasImpactCreds = SIDs.length > 0 && TOKENS.length > 0 && CATALOG_IDS.length > 0;
 const SEARCH_CACHE_TTL = 3600; // 1 hour
 const API_TIMEOUT = 4000;
 const MAX_RETRIES = 2;
@@ -79,7 +79,7 @@ function normalizeProduct(raw: any, sid: string) {
   if (isNaN(price) || price <= 0) return null;
 
   const originalPrice = raw.OriginalPrice ? parseFloat(String(raw.OriginalPrice)) : null;
-  const campaignId = String(raw.CatalogId || PROGRAM_IDS[0] || "1236776");
+  const campaignId = String(raw.CatalogId || CATALOG_IDS[0] || "1236776");
   
   if (campaignId === "18350" || campaignId === "12108") {
     return null;
@@ -166,32 +166,16 @@ async function searchImpactAPI(query: string): Promise<any[]> {
     return [];
   }
 
+  const { sid, header } = getAuth(0);
+
   try {
-    const partnerRequests = SIDs.map(async (sid, i) => {
-      const { header } = getAuth(i);
-      
-      try {
-        const catRes = await axios.get(`https://api.impact.com/Mediapartners/${sid}/Catalogs/`, {
-          headers: { Accept: "application/json", Authorization: header },
-          timeout: API_TIMEOUT
-        }).catch(() => null);
-
-        if (!catRes?.data?.Catalogs || catRes.data.Catalogs.length === 0) {
-          return [];
-        }
-
-        const cid = catRes.data.Catalogs[0].Id || catRes.data.Catalogs[0].CatalogId;
-        return await searchImpactWithRetry(sid, cid, query, header);
-
-      } catch (err) {
-        console.error(`[Search] Catalog error for SID ${sid}:`, err instanceof Error ? err.message : err);
-        return [];
-      }
-    });
+    const catalogRequests = CATALOG_IDS.map((cid) =>
+      searchImpactWithRetry(sid, cid, query, header)
+    );
 
     const results = await Promise.race([
-      Promise.all(partnerRequests),
-      new Promise<any[][]>((_, reject) => 
+      Promise.all(catalogRequests),
+      new Promise<any[][]>((_, reject) =>
         setTimeout(() => reject(new Error('Search timeout')), 12000)
       )
     ]);

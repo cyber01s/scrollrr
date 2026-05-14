@@ -10,10 +10,12 @@ interface FeedState {
   isSearchMode: boolean;
   searchQuery: string;
   isLoading: boolean;
+  specsCache: Record<string, string[]>;
   
   // Actions
   setCards: (cards: Product[]) => void;
   appendCards: (cards: Product[]) => void;
+  setSpecsCache: (id: string, specs: string[]) => void;
   setCurrentIndex: (index: number) => void;
   toggleLike: (id: string) => void;
   setSearchMode: (isMode: boolean) => void;
@@ -32,6 +34,7 @@ export const useFeedStore = create<FeedState>()(
       isSearchMode: false,
       searchQuery: '',
       isLoading: false,
+      specsCache: {},
 
       setCards: (cards) => set({ cards }),
       appendCards: (newCards) => set((state) => {
@@ -53,6 +56,9 @@ export const useFeedStore = create<FeedState>()(
       setSearchQuery: (searchQuery) => set({ searchQuery }),
       setSearchResults: (searchResults) => set({ searchResults }),
       setIsLoading: (isLoading) => set({ isLoading }),
+      setSpecsCache: (id, specs) => set((state) => ({
+        specsCache: { ...state.specsCache, [id]: specs }
+      })),
     }),
     {
       name: 'scrollr-storage',
