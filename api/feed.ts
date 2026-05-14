@@ -43,31 +43,52 @@ const TOKENS = (process.env.IMPACT_AUTH_TOKEN || "")
   .map((s) => s.trim())
   .filter(Boolean);
 
-const PROGRAM_IDS = (process.env.IMPACT_PROGRAM_ID || "")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
-
 const CATALOG_IDS = (process.env.IMPACT_CATALOG_ID || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
 const IMPACT_PARTNER_PROPERTY_ID = "6988584";
-const hasImpactCreds = SIDs.length > 0 && TOKENS.length > 0 && PROGRAM_IDS.length > 0;
+const hasImpactCreds = SIDs.length > 0 && TOKENS.length > 0 && CATALOG_IDS.length > 0;
 const CACHE_TTL = 3600 * 2; // 2 hours cache
 const API_TIMEOUT = 4000; // 4 second timeout per request
 const MAX_RETRIES = 2;
+
+// How many catalogs to pick per scroll page (out of all configured catalogs)
+const CATALOGS_PER_PAGE = 3;
 
 // Log credentials status at startup
 if (!hasImpactCreds) {
   console.error('[Impact] ⚠️  CRITICAL: Missing credentials!');
   console.error(`  IMPACT_ACCOUNT_SID: ${SIDs.length > 0 ? '✓ Set' : '✗ Missing'}`);
   console.error(`  IMPACT_AUTH_TOKEN: ${TOKENS.length > 0 ? '✓ Set' : '✗ Missing'}`);
-  console.error(`  IMPACT_PROGRAM_ID: ${PROGRAM_IDS.length > 0 ? '✓ Set' : '✗ Missing'}`);
+  console.error(`  IMPACT_CATALOG_ID: ${CATALOG_IDS.length > 0 ? `✓ Set (${CATALOG_IDS.length} catalogs)` : '✗ Missing — set IMPACT_CATALOG_ID in Vercel Environment Variables'}`);
   console.error('[Impact] Please set these in Vercel → Settings → Environment Variables');
 } else {
-  console.log('[Impact] ✓ Credentials loaded successfully');
+  console.log(`[Impact] ✓ Credentials loaded — ${CATALOG_IDS.length} catalog(s) configured`);
+}
+
+// ─── Seeded shuffle (LCG) ───────────────────────────────────────────────────
+// Deterministic so the same page always returns the same shuffle (cache-safe),
+// but every page number produces a completely different ordering.
+function seededShuffle<T>(arr: T[], seed: number): T[] {
+  const result = [...arr];
+  let s = seed >>> 0;
+  for (let i = result.length - 1; i > 0; i--) {
+    s = Math.imul(s ^ (s >>> 17), 0x45d9f3b);
+    s = Math.imul(s ^ (s >>> 13), 0xac4f3d2b);
+    s ^= s >>> 16;
+    const j = Math.abs(s) % (i + 1);
+    [result[i], result[j]] = [result[j], result[i]];
+  }
+  return result;
+}
+
+// Pick CATALOGS_PER_PAGE catalog IDs for this scroll page, rotating so every
+// catalog gets fair exposure across pages.
+function pickCatalogsForPage(page: number): string[] {
+  const shuffled = seededShuffle(CATALOG_IDS, page * 0xdeadbeef);
+  return shuffled.slice(0, Math.min(CATALOGS_PER_PAGE, CATALOG_IDS.length));
 }
 
 // Fallback in-memory cache (for when Redis unavailable)
@@ -90,7 +111,7 @@ function normalizeProduct(raw: any, sid: string) {
   if (isNaN(price) || price <= 0) return null;
 
   const originalPrice = raw.OriginalPrice ? parseFloat(String(raw.OriginalPrice)) : null;
-  const campaignId = String(raw.CatalogId || PROGRAM_IDS[0] || "1236776");
+  const campaignId = String(raw.CatalogId || CATALOG_IDS[0] || "");
   
   // Filter out unwanted campaigns
   if (campaignId === "18350" || campaignId === "12108") {
@@ -150,9 +171,8 @@ async function fetchFromImpactWithRetry(sid: string, cid: string, page: number, 
           "User-Agent": "Scrollrr/1.0"
         },
         params: {
-          PageSize: 12,
+          PageSize: 20,
           Page: page,
-          QueryString: "*"
         },
         timeout: API_TIMEOUT
       });
@@ -193,36 +213,47 @@ async function fetchFromImpactAPI(page: number): Promise<any[]> {
     return [];
   }
 
-  if (!CATALOG_IDS.length) {
-    console.error('[Impact] No catalog IDs configured - set IMPACT_CATALOG_ID in Vercel Environment Variables');
-    return [];
-  }
+  const { sid, header } = getAuth(0);
+
+  // Pick a fresh random subset of catalogs for this scroll page.
+  // Each page gets a different selection, cycling fairly across all 13 catalogs.
+  const selectedCatalogs = pickCatalogsForPage(page);
+  console.log(`[Impact] Page ${page} → using catalogs: [${selectedCatalogs.join(', ')}]`);
 
   try {
-    const impactPage = page + 1;
-    const partnerRequests = CATALOG_IDS.map(async (catalogId, i) => {
-      const sid = SIDs[i] || SIDs[0];
-      const { header } = getAuth(i);
-
+    // Fetch from each selected catalog in parallel.
+    // Use a different page offset per catalog so products don't repeat.
+    const catalogRequests = selectedCatalogs.map(async (catalogId, i) => {
+      // Stagger catalog pages so catalog A gives page 1, B gives page 2, etc.
+      // This means every scroll surfaces products from different offsets.
+      const catalogPage = Math.floor(page / CATALOGS_PER_PAGE) + 1 + i;
+      console.log(`[Impact] Fetching SID=${sid}, CatalogID=${catalogId}, CatalogPage=${catalogPage}`);
       try {
-        console.log(`[Impact] Fetching products for SID=${sid}, CatalogID=${catalogId}, Page=${impactPage}`);
-        return await fetchFromImpactWithRetry(sid, catalogId, impactPage, header);
-
+        return await fetchFromImpactWithRetry(sid, catalogId, catalogPage, header);
       } catch (err) {
-        console.error(`[Impact] Catalog fetch error for SID ${sid}:`, err instanceof Error ? err.message : err);
+        console.error(`[Impact] Error for catalog ${catalogId}:`, err instanceof Error ? err.message : err);
         return [];
       }
     });
 
     const results = await Promise.race([
-      Promise.all(partnerRequests),
-      new Promise<any[][]>((_, reject) => 
+      Promise.all(catalogRequests),
+      new Promise<any[][]>((_, reject) =>
         setTimeout(() => reject(new Error('API fetch timeout')), 15000)
       )
     ]);
 
-    const products = results.flat().slice(0, 12);
+    // Merge all results then Fisher-Yates shuffle using page as seed,
+    // so the same page always returns the same order (cache-safe) but
+    // every page feels completely fresh to the user.
+    const merged = results.flat();
+    const shuffled = seededShuffle(merged, page * 0x9e3779b9);
+
+    // Return 12 products per scroll page
+    const products = shuffled.slice(0, 12);
+    console.log(`[Impact] ✓ Returning ${products.length} shuffled products from ${selectedCatalogs.length} catalogs`);
     return products;
+
   } catch (error) {
     console.error('[Impact] API fetch error:', error instanceof Error ? error.message : error);
     return [];
@@ -313,7 +344,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.error('[Feed] Need to set on Vercel:');
       console.error('[Feed]   - IMPACT_ACCOUNT_SID');
       console.error('[Feed]   - IMPACT_AUTH_TOKEN');
-      console.error('[Feed]   - IMPACT_PROGRAM_ID');
+      console.error('[Feed]   - IMPACT_CATALOG_ID');
       console.error('[Feed] Go to: Vercel Dashboard → scrollrr → Settings → Environment Variables');
       return res.status(200).json([]);
     }
