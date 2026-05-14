@@ -22,17 +22,30 @@ export default function SearchOverlay() {
 
   useEffect(() => {
     const delayDebounceFn = setTimeout(async () => {
-      if (query) {
+      const trimmedQuery = query.trim();
+      if (trimmedQuery) {
         setIsSearching(true);
         try {
-          const API_BASE = '';
-          const url = `/api/search?q=${encodeURIComponent(query)}`;
-          
+          const url = `/api/search?q=${encodeURIComponent(trimmedQuery)}`;
           const res = await fetch(url);
-          const data = await res.json();
-          setLocalResults(data);
+          const data = res.ok ? await res.json() : [];
+
+          if (Array.isArray(data) && data.length > 0) {
+            setLocalResults(data);
+          } else {
+            const fallback = cards.filter((product) => {
+              const searchText = `${product.name} ${product.category}`.toLowerCase();
+              return trimmedQuery.toLowerCase().split(/\s+/).every((term) => searchText.includes(term));
+            });
+            setLocalResults(fallback);
+          }
         } catch (e) {
           console.error(e);
+          const fallback = cards.filter((product) => {
+            const searchText = `${product.name} ${product.category}`.toLowerCase();
+            return trimmedQuery.toLowerCase().split(/\s+/).every((term) => searchText.includes(term));
+          });
+          setLocalResults(fallback);
         } finally {
           setIsSearching(false);
         }
@@ -42,7 +55,7 @@ export default function SearchOverlay() {
     }, 280);
 
     return () => clearTimeout(delayDebounceFn);
-  }, [query]);
+  }, [query, cards]);
 
   const handleSelect = (product: Product) => {
     setSearchResults([product]); // Insert at top or jump to

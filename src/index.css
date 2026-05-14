@@ -54,12 +54,12 @@
   overflow-y: scroll;
   scroll-snap-type: y mandatory;
   height: 100dvh;
-  width: 100vw;
+  width: 100%;
 }
 
 .snap-section {
   scroll-snap-align: start;
   height: 100dvh;
-  width: 100vw;
+  width: 100%;
   position: relative;
 }
