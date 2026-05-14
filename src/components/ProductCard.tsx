@@ -216,7 +216,7 @@ export default function ProductCard({ product, index }: ProductCardProps) {
 
       {/* Bottom Content Panel */}
       <motion.div
-        className="absolute bottom-0 left-0 w-full px-[20px] pb-[32px] pt-[60px] z-10 safe-bottom flex flex-col bg-gradient-to-t from-black/90 via-black/50 to-transparent"
+        className="absolute bottom-0 left-0 w-full px-[20px] pb-[40px] pt-[60px] z-10 safe-bottom flex flex-col bg-gradient-to-t from-black/90 via-black/50 to-transparent"
         initial={{ y: 24, opacity: 0 }}
         whileInView={{ y: 0, opacity: 1 }}
         viewport={{ once: true }}
@@ -337,7 +337,7 @@ export default function ProductCard({ product, index }: ProductCardProps) {
               onClick={() => setShowSheet(false)}
             />
             <motion.div
-              className="absolute bottom-0 left-0 w-full bg-[#0A0A0A]/95 backdrop-blur-[20px] rounded-t-[24px] p-8 pb-12 z-50 border-t border-white/10"
+              className="absolute bottom-0 left-0 w-full bg-[#0A0A0A]/95 backdrop-blur-[20px] rounded-t-[24px] p-8 pb-[42px] z-50 border-t border-white/10"
               initial={{ y: "100%" }}
               animate={{ y: 0 }}
               exit={{ y: "100%" }}
