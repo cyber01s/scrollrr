@@ -264,7 +264,7 @@ export default function ProductCard({ product, index }: ProductCardProps) {
 
         <motion.button
           onClick={handleShopNow}
-          className="w-full h-[52px] rounded-[100px] bg-white text-black text-[14px] font-bold tracking-wide flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(255,255,255,0.2)]"
+          className="w-full h-[52px] mb-[30px] rounded-[100px] bg-white text-black text-[14px] font-bold tracking-wide flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(255,255,255,0.2)]"
           whileHover={{ backgroundColor: "rgba(255,255,255,0.22)" }}
           whileTap={{ scale: 0.97 }}
           transition={MOTION.springFast}
