@@ -6,7 +6,7 @@ import { Product } from '../types/product';
 
 export default function Feed() {
   const queryClient = useQueryClient();
-  const { currentIndex, setCurrentIndex, isSearchMode, searchResults } = useFeedStore();
+  const { currentIndex, setCurrentIndex } = useFeedStore();
   const observerTarget = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -146,8 +146,8 @@ export default function Feed() {
     }
 
     const allProducts = data?.pages.flat() || [];
-    const totalCards = isSearchMode ? searchResults.length : allProducts.length;
-  }, [data?.pages, isFetchingNextPage, hasNextPage, fetchNextPage, setCurrentIndex, currentIndex, isSearchMode, searchResults.length]);
+    const totalCards = allProducts.length;
+  }, [data?.pages, isFetchingNextPage, hasNextPage, fetchNextPage, setCurrentIndex, currentIndex]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -167,7 +167,7 @@ export default function Feed() {
   const [prevDbLength, setPrevDbLength] = React.useState(0);
   
   const allProducts = data?.pages.flat() || [];
-  const displayCards = (isSearchMode && searchResults.length > 0) ? searchResults : allProducts;
+  const displayCards = allProducts;
 
   useEffect(() => {
     if (!isFetchingNextPage && displayCards.length > prevDbLength) {
@@ -235,8 +235,7 @@ export default function Feed() {
       )}
 
       {/* Auto Load More / End of Feed */}
-      {!isSearchMode && (
-        <div ref={observerTarget} className="snap-center h-[100dvh] w-full flex items-center justify-center p-6 relative">
+      <div ref={observerTarget} className="snap-center h-[100dvh] w-full flex items-center justify-center p-6 relative">
           {isFetchingNextPage ? (
             <div className="flex gap-2 items-center opacity-50 absolute bottom-32">
               <div className="w-2 h-2 bg-white rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
@@ -247,7 +246,6 @@ export default function Feed() {
             <div className="font-serif text-lg text-white/50 absolute bottom-32">End of feed</div>
           ) : null}
         </div>
-      )}
     </div>
   );
 }

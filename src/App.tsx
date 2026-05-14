@@ -7,15 +7,11 @@ import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import Feed from './components/Feed';
 import TopBar from './components/TopBar';
-import SearchOverlay from './components/SearchOverlay';
-import { motion, AnimatePresence } from 'motion/react';
-import { useFeedStore } from './store/feed';
+import { motion } from 'motion/react';
 
 const queryClient = new QueryClient();
 
 export default function App() {
-  const isSearchMode = useFeedStore((state) => state.isSearchMode);
-
   return (
     <QueryClientProvider client={queryClient}>
       <main 
@@ -25,18 +21,13 @@ export default function App() {
         <TopBar />
         
         <motion.div
-          animate={{ 
-            scale: isSearchMode ? 0.96 : 1,
-            filter: isSearchMode ? 'blur(8px)' : 'blur(0px)'
-          }}
+          animate={{ scale: 1, filter: 'blur(0px)' }}
           transition={{ duration: 0.28, ease: [0.25, 0.1, 0.25, 1.0] }}
           className="w-full h-full"
         >
           <Feed />
         </motion.div>
 
-        <SearchOverlay />
-        
         {/* PWA Manifest link added dynamically if needed, but we focus on UI */}
       </main>
     </QueryClientProvider>

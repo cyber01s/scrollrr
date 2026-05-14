@@ -6,9 +6,6 @@ interface FeedState {
   cards: Product[];
   currentIndex: number;
   likedIds: Set<string>;
-  searchResults: Product[];
-  isSearchMode: boolean;
-  searchQuery: string;
   isLoading: boolean;
   specsCache: Record<string, string[]>;
   
@@ -18,9 +15,6 @@ interface FeedState {
   setSpecsCache: (id: string, specs: string[]) => void;
   setCurrentIndex: (index: number) => void;
   toggleLike: (id: string) => void;
-  setSearchMode: (isMode: boolean) => void;
-  setSearchQuery: (query: string) => void;
-  setSearchResults: (results: Product[]) => void;
   setIsLoading: (loading: boolean) => void;
 }
 
@@ -30,9 +24,6 @@ export const useFeedStore = create<FeedState>()(
       cards: [],
       currentIndex: 0,
       likedIds: new Set<string>(),
-      searchResults: [],
-      isSearchMode: false,
-      searchQuery: '',
       isLoading: false,
       specsCache: {},
 
@@ -52,9 +43,6 @@ export const useFeedStore = create<FeedState>()(
         }
         return { likedIds: nextLikedIds };
       }),
-      setSearchMode: (isSearchMode) => set({ isSearchMode }),
-      setSearchQuery: (searchQuery) => set({ searchQuery }),
-      setSearchResults: (searchResults) => set({ searchResults }),
       setIsLoading: (isLoading) => set({ isLoading }),
       setSpecsCache: (id, specs) => set((state) => ({
         specsCache: { ...state.specsCache, [id]: specs }
