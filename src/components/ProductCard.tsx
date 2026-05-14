@@ -216,7 +216,7 @@ export default function ProductCard({ product, index }: ProductCardProps) {
 
       {/* Bottom Content Panel */}
       <motion.div
-        className="absolute bottom-0 left-0 w-full px-[20px] pb-[40px] pt-[60px] z-10 safe-bottom flex flex-col bg-gradient-to-t from-black/90 via-black/50 to-transparent"
+        className="absolute bottom-0 left-0 w-full px-[20px] pb-[64px] pt-[60px] z-10 safe-bottom flex flex-col bg-gradient-to-t from-black/90 via-black/50 to-transparent"
         initial={{ y: 24, opacity: 0 }}
         whileInView={{ y: 0, opacity: 1 }}
         viewport={{ once: true }}
