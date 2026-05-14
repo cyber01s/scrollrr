@@ -84,13 +84,6 @@ function seededShuffle<T>(arr: T[], seed: number): T[] {
   return result;
 }
 
-// Pick CATALOGS_PER_PAGE catalog IDs for this scroll page, rotating so every
-// catalog gets fair exposure across pages.
-function pickCatalogsForPage(page: number): string[] {
-  const shuffled = seededShuffle(CATALOG_IDS, page * 0xdeadbeef);
-  return shuffled.slice(0, Math.min(CATALOGS_PER_PAGE, CATALOG_IDS.length));
-}
-
 // Fallback in-memory cache (for when Redis unavailable)
 const memoryCache: Record<string, { data: any[], timestamp: number }> = {};
 
@@ -207,7 +200,7 @@ async function fetchFromImpactWithRetry(sid: string, cid: string, page: number, 
   return [];
 }
 
-async function fetchFromImpactAPI(page: number): Promise<any[]> {
+async function fetchFromImpactAPI(page: number, seed: number): Promise<any[]> {
   if (!hasImpactCreds) {
     console.warn('[Impact] No credentials available');
     return [];
@@ -216,9 +209,10 @@ async function fetchFromImpactAPI(page: number): Promise<any[]> {
   const { sid, header } = getAuth(0);
 
   // Pick a fresh random subset of catalogs for this scroll page.
-  // Each page gets a different selection, cycling fairly across all 13 catalogs.
-  const selectedCatalogs = pickCatalogsForPage(page);
-  console.log(`[Impact] Page ${page} → using catalogs: [${selectedCatalogs.join(', ')}]`);
+  // Each page gets a different selection and seed-scoped order.
+  const shuffled_catalogs = seededShuffle(CATALOG_IDS, seed ^ (page * 0xdeadbeef));
+  const selectedCatalogs = shuffled_catalogs.slice(0, Math.min(CATALOGS_PER_PAGE, CATALOG_IDS.length));
+  console.log(`[Impact] Page ${page}, seed ${seed} → using catalogs: [${selectedCatalogs.join(', ')}]`);
 
   try {
     // Fetch from each selected catalog in parallel.
@@ -247,7 +241,7 @@ async function fetchFromImpactAPI(page: number): Promise<any[]> {
     // so the same page always returns the same order (cache-safe) but
     // every page feels completely fresh to the user.
     const merged = results.flat();
-    const shuffled = seededShuffle(merged, page * 0x9e3779b9);
+    const shuffled = seededShuffle(merged, seed ^ (page * 0x9e3779b9));
 
     // Return 12 products per scroll page
     const products = shuffled.slice(0, 12);
@@ -260,12 +254,12 @@ async function fetchFromImpactAPI(page: number): Promise<any[]> {
   }
 }
 
-function getCacheKey(page: number): string {
-  return `feed:page:${page}`;
+function getCacheKey(page: number, seed: number): string {
+  return `feed:s${seed}:p${page}`;
 }
 
-async function getFromCache(page: number): Promise<any[] | null> {
-  const key = getCacheKey(page);
+async function getFromCache(page: number, seed: number): Promise<any[] | null> {
+  const key = getCacheKey(page, seed);
   
   try {
     // Try Redis first
@@ -291,8 +285,8 @@ async function getFromCache(page: number): Promise<any[] | null> {
   return null;
 }
 
-async function setCache(page: number, data: any[]): Promise<void> {
-  const key = getCacheKey(page);
+async function setCache(page: number, seed: number, data: any[]): Promise<void> {
+  const key = getCacheKey(page, seed);
   
   try {
     // Try Redis first
@@ -329,11 +323,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const page = parseInt(req.query?.page as string) || 0;
+    const seed = parseInt(req.query?.seed as string) || Math.floor(Math.random() * 0xffffffff);
 
-    console.log(`[Feed] Request: page=${page}`);
+    console.log(`[Feed] Request: page=${page}, seed=${seed}`);
 
     // 1. Check cache (Redis with fallback to memory)
-    const cachedData = await getFromCache(page);
+    const cachedData = await getFromCache(page, seed);
     if (cachedData && cachedData.length > 0) {
       return res.status(200).json(cachedData);
     }
@@ -351,11 +346,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // 3. Fetch from Impact.com API
     console.log(`[Feed] Fetching from Impact.com API...`);
-    const products = await fetchFromImpactAPI(page);
+    const products = await fetchFromImpactAPI(page, seed);
 
     if (products && products.length > 0) {
       // Cache the results (async but don't wait)
-      setCache(page, products);
+      setCache(page, seed, products);
       console.log(`[Feed] ✓ Returning ${products.length} products from Impact.com`);
       return res.status(200).json(products);
     }

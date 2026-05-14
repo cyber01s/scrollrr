@@ -10,9 +10,20 @@ export default function Feed() {
   const observerTarget = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Generate once per session so the same scroll session never repeats products
+  // but every new visit/refresh gets a fresh shuffle.
+  const sessionSeed = React.useRef(
+    parseInt(sessionStorage.getItem('scrollr-seed') || '0') ||
+    (() => {
+      const s = Math.floor(Math.random() * 0xffffffff);
+      sessionStorage.setItem('scrollr-seed', String(s));
+      return s;
+    })()
+  );
+
   const fetchFeed = useCallback(async ({ pageParam = 0 }) => {
     try {
-      const url = `/api/feed?page=${pageParam}`;
+      const url = `/api/feed?page=${pageParam}&seed=${sessionSeed.current}`;
       console.log(`[Feed] Fetching: ${url}`);
       
       let res;
@@ -82,7 +93,7 @@ export default function Feed() {
     error,
     isLoading
   } = useInfiniteQuery({
-    queryKey: ['feed'],
+    queryKey: ['feed', sessionSeed.current],
     queryFn: fetchFeed,
     initialPageParam: 0,
     getNextPageParam: (lastPage, allPages) => 
