@@ -66,7 +66,7 @@ export default function SearchOverlay() {
     <AnimatePresence>
       {isSearchMode && (
         <motion.div 
-          className="fixed inset-0 z-50 flex flex-col pt-4 safe-top"
+          className="fixed inset-0 z-50 flex flex-col pt-4 safe-top overflow-x-hidden"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}

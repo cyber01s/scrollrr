@@ -26,11 +26,35 @@
     @apply bg-black text-white font-sans antialiased overflow-hidden;
     user-select: none;
     -webkit-touch-callout: none;
+    overflow-x: hidden;
   }
 
-  /* Prevent pull-to-refresh */
   html, body {
     overscroll-behavior-y: none;
+  }
+}
+
+@layer utilities {
+  .no-scrollbar {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
+  }
+  .safe-top {
+    padding-top: env(safe-area-inset-top);
+  }
+  .safe-bottom {
+    padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 30px);
+  }
+  .vignette {
+    background: linear-gradient(to top, rgba(0,0,0,0.8) 0%, rgba(0,0,0,0.4) 40%, transparent 100%);
+  }
+  .glass {
+    @apply bg-white/10 backdrop-blur-md border border-white/20;
   }
 }
 
