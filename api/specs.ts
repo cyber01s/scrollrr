@@ -25,6 +25,37 @@ const DEFAULT_SPECS: Record<string, string[]> = {
   "gopro-hero12": ["5.3K Video Recording", "Exceptional Low-Light Performance", "Rugged & Waterproof"],
 };
 
+function parseSpecsFromText(text: string): string[] {
+  const cleaned = text.trim();
+  const jsonMatch = cleaned.match(/\[.*\]/s);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (Array.isArray(parsed)) {
+        return parsed.filter((item) => typeof item === 'string' && item.trim().length > 0);
+      }
+    } catch (err) {
+      // ignore
+    }
+  }
+
+  try {
+    const parsed = JSON.parse(cleaned);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((item) => typeof item === 'string' && item.trim().length > 0);
+    }
+  } catch (err) {
+    // ignore
+  }
+
+  const lines = cleaned.split(/\r?\n/).map((line) => line.replace(/^[-*\s]+/, '').trim()).filter(Boolean);
+  if (lines.length >= 3) {
+    return lines.slice(0, 3);
+  }
+
+  return [];
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Enable CORS
   res.setHeader('Access-Control-Allow-Credentials', 'true');
@@ -67,36 +98,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (process.env.GEMINI_API_KEY) {
       try {
         const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-
+        const prompt = `You are a product expert. Generate exactly 3 concise, product-specific specification bullets for this product. Do not use generic marketing phrases such as Premium, Advanced, Enhanced, High Performance, or Superior. Use the product name and category to create realistic, unique specs. Return ONLY a JSON array of 3 strings.`;
         const response = await ai.models.generateContent({
-          model: 'gemini-2.0-flash',
-          contents: `For this product "${productName}", generate exactly 3 key product specifications or features as a JSON array of strings. Example format: ["Feature 1", "Feature 2", "Feature 3"]. Return ONLY the JSON array, no other text.`
+          model: 'gemini-3-flash-preview',
+          contents: `${prompt} Product Name: ${productName}. Category: ${req.query?.category || 'Unknown'}.`,
         });
 
-        const text = response.text?.trim() || '';
-        
-        try {
-          // Try to extract JSON array from response
-          const jsonMatch = text.match(/\[.*\]/s);
-          if (jsonMatch) {
-            const specs = JSON.parse(jsonMatch[0]);
-            if (Array.isArray(specs) && specs.length > 0) {
-              return res.status(200).json(specs.slice(0, 3));
-            }
-          }
-        } catch (parseError) {
-          console.warn('Failed to parse Gemini specs response:', text);
+        const text = (response.text ||
+          response.output?.[0]?.content?.map((item: any) => item.text).join('') ||
+          '').trim();
+
+        const parsedSpecs = parseSpecsFromText(text);
+        if (parsedSpecs.length > 0) {
+          return res.status(200).json(parsedSpecs.slice(0, 3));
         }
       } catch (geminiError) {
-        console.warn('Gemini API error (using defaults):', geminiError);
+        console.warn('Gemini API error:', geminiError);
       }
     }
 
-    // Fallback to generic specs
+    // Fallback to generic specs only if Gemini was unavailable or failed.
     const genericSpecs = [
-      "Premium Quality Construction",
-      "Advanced Performance Features",
-      "Enhanced User Experience"
+      'Premium Quality Construction',
+      'Advanced Performance Features',
+      'Enhanced User Experience'
     ];
 
     return res.status(200).json(genericSpecs);
